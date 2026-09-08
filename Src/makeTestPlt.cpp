@@ -12,6 +12,7 @@
 #include <AMReX_MultiFab.H>
 #include <AMReX_PlotFileUtil.H>
 #include <algorithm>
+#include <cmath>
 
 using namespace amrex;
 
@@ -44,6 +45,7 @@ int main (int argc, char* argv[])
 
         // Fraction of the domain refined at each successive level.
         Real refine_frac = 0.5;       pp.query("refine_frac", refine_frac);
+        int  cell_k = 4;              pp.query("cell_k", cell_k);
 
         AMREX_ALWAYS_ASSERT(nlevels >= 1);
         AMREX_ALWAYS_ASSERT(ref_ratio == 2 || ref_ratio == 4);
@@ -108,13 +110,20 @@ int main (int argc, char* argv[])
             // carrying "x" must come back on the surface equal to the
             // vertex's own x coordinate -- an exact identity to check the
             // component sampling against, not an approximate one.
-            data[lev].define(grids[lev], dmap[lev], 1+AMREX_SPACEDIM, 0);
+            // ... plus a cellular field, cos(2 pi k x/L) summed over
+            // directions. On a periodic domain it has exactly k^DIM maxima, so
+            // just below its maximum the number of connected components above
+            // threshold is known exactly -- and the maxima sit ON the domain
+            // faces, so finding k^DIM of them is also a test that the wrap is
+            // in the adjacency.
+            data[lev].define(grids[lev], dmap[lev], 2+AMREX_SPACEDIM, 0);
 
             const auto dx  = geom[lev].CellSizeArray();
             const auto plo = geom[lev].ProbLoArray();
             GpuArray<Real,AMREX_SPACEDIM> phiA;
             for (int d = 0; d < AMREX_SPACEDIM; ++d) { phiA[d] = phi[d]; }
             const Real rad = radius;
+            const Real kk  = Real(cell_k);
 
             for (MFIter mfi(data[lev]); mfi.isValid(); ++mfi) {
                 const Box& bx = mfi.validbox();
@@ -134,6 +143,11 @@ int main (int argc, char* argv[])
                     AMREX_D_TERM(a(i,j,k,1) = x;,
                                  a(i,j,k,2) = y;,
                                  a(i,j,k,3) = z;);
+                    Real cc = 0;
+                    AMREX_D_TERM(cc += std::cos(Real(2.0)*Real(M_PI)*kk*x/phiA[0]);,
+                                 cc += std::cos(Real(2.0)*Real(M_PI)*kk*y/phiA[1]);,
+                                 cc += std::cos(Real(2.0)*Real(M_PI)*kk*z/phiA[2]););
+                    a(i,j,k,1+AMREX_SPACEDIM) = cc;
                 });
             }
         }
@@ -142,7 +156,7 @@ int main (int argc, char* argv[])
         Vector<int> steps(nlevels, 0);
         for (int lev = 0; lev < nlevels; ++lev) { mfs[lev] = &data[lev]; }
 
-        Vector<std::string> vnames = {"dist", AMREX_D_DECL("xco","yco","zco")};
+        Vector<std::string> vnames = {"dist", AMREX_D_DECL("xco","yco","zco"), "cells"};
         WriteMultiLevelPlotfile(outfile, nlevels, mfs, vnames, geom,
                                 Real(0.0), steps, rr);
 

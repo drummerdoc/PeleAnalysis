@@ -230,6 +230,42 @@ public:
     // Centre of the cell naming this node, at that node's own level.
     amrex::RealVect nodePosition (const Node& n) const noexcept;
 
+    // The canonical node traversal: every VALID node exactly once, with its
+    // field values and the volume of the cell it names. Volumes are exact --
+    // uncovered cells partition the domain -- so summing them over a set of
+    // nodes gives that region's volume with no quadrature.
+    //
+    // func(const Node& n, const Real* values, Real cellVolume, bool onBoxEdge)
+    //   onBoxEdge marks a node within one cell of its box boundary, i.e. one
+    //   that may appear as a ghost on another rank. A distributed union-find
+    //   needs exactly those and no others.
+    template <class F>
+    void forEachNode (F&& func) const
+    {
+        for (int lev = 0; lev < m_nlev; ++lev) {
+            const auto dx = m_geom[lev].CellSize();
+            amrex::Real cvol = 1.0;
+            for (int d = 0; d < AMREX_SPACEDIM; ++d) { cvol *= dx[d]; }
+            for (amrex::MFIter mfi(m_nodes[lev]); mfi.isValid(); ++mfi) {
+                const amrex::Box& vbx = mfi.validbox();
+                auto const& a = m_nodes[lev].const_array(mfi);
+                amrex::Array4<const amrex::Real> fv;
+                if (m_ncomp > 0) { fv = m_field[lev].const_array(mfi); }
+                amrex::Box inner = vbx;
+                inner.grow(-1);
+                AMREX_LOOP_3D(vbx, i, j, k,
+                {
+                    const Node& n = a(i,j,k);
+                    if (n.type != Node::VALID) { continue; }
+                    const amrex::IntVect iv(AMREX_D_DECL(i,j,k));
+                    amrex::Real vals[16];
+                    for (int c = 0; c < m_ncomp && c < 16; ++c) { vals[c] = fv(i,j,k,c); }
+                    func(n, vals, cvol, !inner.contains(iv));
+                });
+            }
+        }
+    }
+
     // The canonical element traversal. Every consumer goes through this, so
     // that ownership, corner ordering and the VALID test are stated once. Two
     // copies of this loop is two chances to disagree about which elements
