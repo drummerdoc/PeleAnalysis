@@ -127,60 +127,72 @@ int AMRContour::simplexify (const Node (&cn)[Element::NNODE],
     return n;
 }
 
-long AMRContour::edgeVertex (long ga, long gb,
-                             const RealVect& pa, const RealVect& pb,
+long AMRContour::edgeVertex (const Node& na, const Node& nb,
                              Real fa, Real fb,
-                             const Real* da, const Real* db,
-                             const RealVect& origin)
+                             const Real* da, const Real* db)
 {
-    std::pair<long,long> key = (ga < gb) ? std::make_pair(ga,gb)
-                                         : std::make_pair(gb,ga);
-    auto it = m_vertCache.find(key);
-    if (it != m_vertCache.end()) { return it->second; }
+    // Canonicalise on the edge itself, so the answer cannot depend on which
+    // element -- or which rank -- got here first.
+    const bool aFirst = (na.gid < nb.gid);
+    const Node& n0 = aFirst ? na : nb;
+    const Node& n1 = aFirst ? nb : na;
+    const Real  v0 = aFirst ? fa : fb;
+    const Real  v1 = aFirst ? fb : fa;
+    const Real* c0 = aFirst ? da : db;
+    const Real* c1 = aFirst ? db : da;
 
-    // Interpolate in the direction the key was canonicalised, so the position
-    // does not depend on which element reached the edge first.
-    const RealVect& p0 = (ga < gb) ? pa : pb;
-    const RealVect& p1 = (ga < gb) ? pb : pa;
-    const Real      v0 = (ga < gb) ? fa : fb;
-    const Real      v1 = (ga < gb) ? fb : fa;
+    const std::pair<long,long> key(n0.gid, n1.gid);
 
-    const Real* d0 = (ga < gb) ? da : db;
-    const Real* d1 = (ga < gb) ? db : da;
+    const auto& g   = m_cx.geom(0);
+    const auto  plo = g.ProbLo();
+    const auto  phi = g.ProbHi();
+    const int   nc  = m_cx.nComp();
 
     const Real den = v1 - v0;
     const Real t   = (den == Real(0.0)) ? Real(0.5) : (m_isoVal - v0)/den;
 
-    RealVect p;
-    for (int d = 0; d < AMREX_SPACEDIM; ++d) { p[d] = p0[d] + t*(p1[d] - p0[d]); }
-
-    // Stored positions are absolute and wrapped back into the domain, so a
-    // vertex on a wrap edge has one canonical location. Areas are NOT computed
-    // from these -- they are computed in the element's own frame, below, where
-    // the geometry is unbroken.
-    const auto& g   = m_cx.geom(0);
-    const auto  plo = g.ProbLo();
-    const auto  phi = g.ProbHi();
+    // Absolute positions of the two end nodes, the far one brought to its
+    // minimum image of the near one. This is a function of the edge only --
+    // the previous version added the enclosing element's corner-0 offset,
+    // which differs between the elements sharing the edge and so produced
+    // copies differing by an ulp.
+    const RealVect q0 = m_cx.nodePosition(n0);
+    RealVect       q1 = m_cx.nodePosition(n1);
     RealVect pw;
     for (int d = 0; d < AMREX_SPACEDIM; ++d) {
-        Real x = origin[d] + p[d];
+        const Real L = phi[d] - plo[d];
         if (g.isPeriodic(d)) {
-            const Real L = phi[d] - plo[d];
+            if (q1[d] - q0[d] >  Real(0.5)*L) { q1[d] -= L; }
+            if (q1[d] - q0[d] < -Real(0.5)*L) { q1[d] += L; }
+        }
+        Real x = q0[d] + t*(q1[d] - q0[d]);
+        if (g.isPeriodic(d)) {
             while (x <  plo[d]) { x += L; }
             while (x >= phi[d]) { x -= L; }
         }
         pw[d] = x;
     }
 
-    // Every carried component at the same parameter as the position. Because
-    // the vertex is cached on its node-edge key, this is computed once and
-    // every element sharing that edge gets the identical values -- across
-    // levels and across the periodic wrap -- rather than each recomputing and
-    // being reconciled afterwards.
-    const int nc = m_cx.nComp();
-    for (int n = 0; n < nc; ++n) {
-        m_vertData.push_back(d0[n] + t*(d1[n] - d0[n]));
+    auto it = m_vertCache.find(key);
+    if (it != m_vertCache.end()) {
+        if (m_checkDeterminism) {
+            const long j = it->second;
+            bool same = true;
+            for (int d = 0; d < AMREX_SPACEDIM; ++d) {
+                if (m_verts[j][d] != pw[d]) { same = false; }
+            }
+            for (int n = 0; n < nc && same; ++n) {
+                const Real want = c0[n] + t*(c1[n] - c0[n]);
+                if (m_vertData[std::size_t(j)*std::size_t(nc)+std::size_t(n)] != want) {
+                    same = false;
+                }
+            }
+            if (!same) { ++m_determinismMismatches; }
+        }
+        return it->second;
     }
+
+    for (int n = 0; n < nc; ++n) { m_vertData.push_back(c0[n] + t*(c1[n] - c0[n])); }
 
     const long idx = long(m_verts.size());
     m_verts.push_back(pw);
@@ -190,8 +202,9 @@ long AMRContour::edgeVertex (long ga, long gb,
 }
 
 AMRContour::AMRContour (const AMRComplex& cx, int comp, Real isoVal,
-                        bool minGidDiagonal)
-    : m_cx(cx), m_comp(comp), m_isoVal(isoVal), m_minGidDiag(minGidDiagonal)
+                        bool minGidDiagonal, bool checkDeterminism)
+    : m_cx(cx), m_comp(comp), m_isoVal(isoVal), m_minGidDiag(minGidDiagonal),
+      m_checkDeterminism(checkDeterminism)
 {
     const int nc = cx.nComp();
     AMREX_ALWAYS_ASSERT(comp >= 0 && comp < nc);
@@ -248,11 +261,10 @@ AMRContour::AMRContour (const AMRComplex& cx, int comp, Real isoVal,
                 const int apex  = (na == 1) ? above[0] : below[0];
                 const int* rest = (na == 1) ? below : above;
                 for (int k = 0; k < 2; ++k) {
-                    v[nv++] = edgeVertex(cn[apex].gid, cn[rest[k]].gid,
-                                         q[apex], q[rest[k]],
+                    v[nv++] = edgeVertex(cn[apex], cn[rest[k]],
                                          fv[apex], fv[rest[k]],
                                          &vals[std::size_t(apex)*std::size_t(nc)],
-                                         &vals[std::size_t(rest[k])*std::size_t(nc)], o);
+                                         &vals[std::size_t(rest[k])*std::size_t(nc)]);
                 }
             }
 #else
@@ -260,11 +272,10 @@ AMRContour::AMRContour (const AMRComplex& cx, int comp, Real isoVal,
                 const int apex  = (na == 1) ? above[0] : below[0];
                 const int* rest = (na == 1) ? below : above;
                 for (int k = 0; k < 3; ++k) {
-                    v[nv++] = edgeVertex(cn[apex].gid, cn[rest[k]].gid,
-                                         q[apex], q[rest[k]],
+                    v[nv++] = edgeVertex(cn[apex], cn[rest[k]],
                                          fv[apex], fv[rest[k]],
                                          &vals[std::size_t(apex)*std::size_t(nc)],
-                                         &vals[std::size_t(rest[k])*std::size_t(nc)], o);
+                                         &vals[std::size_t(rest[k])*std::size_t(nc)]);
                 }
             } else {
                 // Two-two split: the four crossings form a quad, listed
@@ -274,11 +285,10 @@ AMRContour::AMRContour (const AMRComplex& cx, int comp, Real isoVal,
                 const int ea[4] = {a0,a0,a1,a1};
                 const int eb[4] = {b0,b1,b1,b0};
                 for (int k = 0; k < 4; ++k) {
-                    v[nv++] = edgeVertex(cn[ea[k]].gid, cn[eb[k]].gid,
-                                         q[ea[k]], q[eb[k]],
+                    v[nv++] = edgeVertex(cn[ea[k]], cn[eb[k]],
                                          fv[ea[k]], fv[eb[k]],
                                          &vals[std::size_t(ea[k])*std::size_t(nc)],
-                                         &vals[std::size_t(eb[k])*std::size_t(nc)], o);
+                                         &vals[std::size_t(eb[k])*std::size_t(nc)]);
                 }
             }
 #endif

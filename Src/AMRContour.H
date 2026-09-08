@@ -45,8 +45,11 @@ public:
     // list its corners differently. If the closed-surface check cannot tell
     // that apart from the correct rule, the check is worthless. Never use it
     // for anything but testing.
+    // checkDeterminism recomputes every cached vertex and compares bitwise.
+    // It must be set at construction because the constructor does all the
+    // work. See the note on m_checkDeterminism.
     AMRContour (const AMRComplex& cx, int comp, amrex::Real isoVal,
-                bool minGidDiagonal = true);
+                bool minGidDiagonal = true, bool checkDeterminism = false);
 
     struct Report
     {
@@ -135,13 +138,26 @@ private:
     static int simplexify (const Node (&cn)[Element::NNODE],
                            int simp[6][AMREX_SPACEDIM+1], bool minGidDiagonal);
 
+    // Everything a surface vertex is depends on the EDGE alone: the two end
+    // nodes, their values, and their carried data. Nothing about the element
+    // that happened to reach the edge first may enter, or two elements -- and
+    // so two ranks -- will produce copies differing in the last bits.
+    //
     // da/db are the full component vectors at the two ends; every one is
     // interpolated at the parameter the isosurface component determines.
-    long edgeVertex (long ga, long gb,
-                     const amrex::RealVect& pa, const amrex::RealVect& pb,
+    long edgeVertex (const Node& na, const Node& nb,
                      amrex::Real fa, amrex::Real fb,
-                     const amrex::Real* da, const amrex::Real* db,
-                     const amrex::RealVect& origin);
+                     const amrex::Real* da, const amrex::Real* db);
+
+    // Recompute a cached vertex and compare bitwise. A serial test for a
+    // parallel defect: within one rank the cache hides a frame-dependent
+    // computation entirely, and it only surfaces as two ranks disagreeing.
+    bool m_checkDeterminism = false;
+    long m_determinismMismatches = 0;
+
+public:
+    long determinismMismatches () const noexcept { return m_determinismMismatches; }
+private:
 
     const AMRComplex& m_cx;
     int               m_comp;

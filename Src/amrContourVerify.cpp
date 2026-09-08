@@ -59,7 +59,20 @@ int main (int argc, char* argv[])
                     << "(negative control)\n";
 #endif
         }
-        amrcomplex::AMRContour ct(cx, 0, isoVal, diagRule != 0);
+        // A serial test for a parallel defect. Within one rank the vertex
+        // cache hides any element-dependence in the computation completely;
+        // it surfaces only as two ranks producing copies that differ in the
+        // last bits, which is what broke the MEF byte-identity claim.
+        int checkDet = 1;
+        pp.query("check_vertex_determinism", checkDet);
+
+        amrcomplex::AMRContour ct(cx, 0, isoVal, diagRule != 0, checkDet != 0);
+        if (checkDet) {
+            const long mm = ct.determinismMismatches();
+            Print() << "  vertex determinism: " << mm
+                    << " cached vertices differ on recompute"
+                    << (mm == 0 ? "  PASS\n" : "  FAIL\n");
+        }
 
         std::string outfile;
         pp.query("outfile", outfile);

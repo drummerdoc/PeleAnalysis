@@ -11,6 +11,7 @@
 #include <AMReX_ParmParse.H>
 #include <AMReX_MultiFab.H>
 #include <AMReX_PlotFileUtil.H>
+#include <algorithm>
 
 using namespace amrex;
 
@@ -20,7 +21,22 @@ int main (int argc, char* argv[])
     {
         ParmParse pp;
 
+        // n_cell and prob_hi may be given per direction, so that cells can be
+        // anisotropic (dx != dy) and the domain non-cubic. Every case up to
+        // now has been a unit cube with one n_cell, which exercises none of
+        // the per-direction arithmetic in the complex -- and elongated
+        // domains are the normal case for a pipe or a channel.
         int n_cell = 32;              pp.query("n_cell", n_cell);
+        Vector<int> ncv(AMREX_SPACEDIM, n_cell);
+        if (const int nn = pp.countval("n_cell_vec")) {
+            AMREX_ALWAYS_ASSERT(nn == AMREX_SPACEDIM);
+            pp.getarr("n_cell_vec", ncv, 0, AMREX_SPACEDIM);
+        }
+        Vector<Real> phi(AMREX_SPACEDIM, 1.0);
+        if (const int np = pp.countval("prob_hi")) {
+            AMREX_ALWAYS_ASSERT(np == AMREX_SPACEDIM);
+            pp.getarr("prob_hi", phi, 0, AMREX_SPACEDIM);
+        }
         int max_grid_size = 16;       pp.query("max_grid_size", max_grid_size);
         int nlevels = 2;              pp.query("nlevels", nlevels);
         int ref_ratio = 2;            pp.query("ref_ratio", ref_ratio);
@@ -33,7 +49,7 @@ int main (int argc, char* argv[])
         AMREX_ALWAYS_ASSERT(ref_ratio == 2 || ref_ratio == 4);
 
         RealBox rb({AMREX_D_DECL(Real(0.0),Real(0.0),Real(0.0))},
-                   {AMREX_D_DECL(Real(1.0),Real(1.0),Real(1.0))});
+                   {AMREX_D_DECL(phi[0],phi[1],phi[2])});
         // Periodicity is not recorded in a plotfile; AMRComplex takes it as an
         // input. Writing with is_per=0 here is therefore not a statement about
         // how the file may later be interpreted.
@@ -47,7 +63,14 @@ int main (int argc, char* argv[])
 
         Box prev;
         Box dom(IntVect(AMREX_D_DECL(0,0,0)),
-                IntVect(AMREX_D_DECL(n_cell-1,n_cell-1,n_cell-1)));
+                IntVect(AMREX_D_DECL(ncv[0]-1,ncv[1]-1,ncv[2]-1)));
+
+        // The sphere stays a sphere in physical space whatever the domain
+        // shape, so 4*pi*r^2 remains the reference. Radius is set from the
+        // shortest side so it always fits.
+        Real Lmin = phi[0];
+        for (int d = 1; d < AMREX_SPACEDIM; ++d) { Lmin = std::min(Lmin, phi[d]); }
+        const Real radius = Real(0.3)*Lmin;
 
         for (int lev = 0; lev < nlevels; ++lev) {
             if (lev > 0) { dom.refine(ref_ratio); }
@@ -64,12 +87,17 @@ int main (int argc, char* argv[])
                 // nothing but COVERED parents to stitch to -- which produces a
                 // silent gap rather than an error.
                 Box fbx = Box(prev).refine(ref_ratio);
-                int w = int(refine_frac*fbx.length(0));
-                w = std::max(8, (w/8)*8);
-                const int shrink = (fbx.length(0) - w)/2;
-                fbx.grow(-((shrink/8)*8));
-                AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
-                    fbx.length(0) >= 8, "refined region shrank away; raise n_cell");
+                // Shrink proportionally in each direction, so an elongated
+                // domain gets an elongated refined region rather than a cube
+                // that may not fit.
+                for (int d = 0; d < AMREX_SPACEDIM; ++d) {
+                    int w = int(refine_frac*fbx.length(d));
+                    w = std::max(8, (w/8)*8);
+                    const int shrink = (fbx.length(d) - w)/2;
+                    fbx.grow(d, -((shrink/8)*8));
+                    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
+                        fbx.length(d) >= 8, "refined region shrank away; raise n_cell");
+                }
                 grids[lev].define(fbx);
                 prev = fbx;
             }
@@ -84,6 +112,9 @@ int main (int argc, char* argv[])
 
             const auto dx  = geom[lev].CellSizeArray();
             const auto plo = geom[lev].ProbLoArray();
+            GpuArray<Real,AMREX_SPACEDIM> phiA;
+            for (int d = 0; d < AMREX_SPACEDIM; ++d) { phiA[d] = phi[d]; }
+            const Real rad = radius;
 
             for (MFIter mfi(data[lev]); mfi.isValid(); ++mfi) {
                 const Box& bx = mfi.validbox();
@@ -96,10 +127,10 @@ int main (int argc, char* argv[])
                     // Distance to a sphere of radius 0.3 centred in the domain:
                     // an isosurface at 0 has area 4*pi*r^2 exactly.
                     Real r2 = 0;
-                    AMREX_D_TERM(r2 += (x-Real(0.5))*(x-Real(0.5));,
-                                 r2 += (y-Real(0.5))*(y-Real(0.5));,
-                                 r2 += (z-Real(0.5))*(z-Real(0.5)););
-                    a(i,j,k,0) = std::sqrt(r2) - Real(0.3);
+                    AMREX_D_TERM(r2 += (x-Real(0.5)*phiA[0])*(x-Real(0.5)*phiA[0]);,
+                                 r2 += (y-Real(0.5)*phiA[1])*(y-Real(0.5)*phiA[1]);,
+                                 r2 += (z-Real(0.5)*phiA[2])*(z-Real(0.5)*phiA[2]););
+                    a(i,j,k,0) = std::sqrt(r2) - rad;
                     AMREX_D_TERM(a(i,j,k,1) = x;,
                                  a(i,j,k,2) = y;,
                                  a(i,j,k,3) = z;);
@@ -115,8 +146,11 @@ int main (int argc, char* argv[])
         WriteMultiLevelPlotfile(outfile, nlevels, mfs, vnames, geom,
                                 Real(0.0), steps, rr);
 
-        Print() << "wrote " << outfile << ": " << nlevels << " level(s), base "
-                << n_cell << "^" << AMREX_SPACEDIM << ", ref_ratio " << ref_ratio << "\n";
+        Print() << "wrote " << outfile << ": " << nlevels << " level(s), base";
+        for (int d = 0; d < AMREX_SPACEDIM; ++d) { Print() << " " << ncv[d]; }
+        Print() << ", domain";
+        for (int d = 0; d < AMREX_SPACEDIM; ++d) { Print() << " " << phi[d]; }
+        Print() << ", sphere r=" << radius << ", ref_ratio " << ref_ratio << "\n";
         for (int lev = 0; lev < nlevels; ++lev) {
             Print() << "   level " << lev << ": " << grids[lev].size()
                     << " boxes, " << grids[lev].numPts() << " cells\n";
