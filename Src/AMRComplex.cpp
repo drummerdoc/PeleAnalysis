@@ -4,6 +4,9 @@
 #include <AMReX_ParallelDescriptor.H>
 
 #include <limits>
+#include <map>
+#include <array>
+#include <algorithm>
 #include <vector>
 
 using namespace amrex;
@@ -42,6 +45,18 @@ IntVect cornerOffset (int c) noexcept
     return IntVect(ox[c], oy[c], oz[c]);
 #endif
 }
+
+// Faces of the dual cell in VTK_HEXAHEDRON corner numbering.
+#if (AMREX_SPACEDIM == 2)
+using FaceKey = std::array<long,4>;
+const int NFACE = 4;
+const int FACE[4][4] = {{0,1,1,0},{1,2,2,1},{2,3,3,2},{3,0,0,3}};
+#else
+using FaceKey = std::array<long,4>;
+const int NFACE = 6;
+const int FACE[6][4] = {{0,1,2,3},{4,5,6,7},{0,1,5,4},
+                        {1,2,6,5},{2,3,7,6},{3,0,4,7}};
+#endif
 
 #if (AMREX_SPACEDIM == 3)
 // Six tets sharing the main diagonal 0-6; they tile the unit cube exactly.
@@ -451,6 +466,8 @@ AMRComplex::VerifyReport AMRComplex::verify () const
     // problem grows.
     Real volSum = 0.0, volComp = 0.0;
     Long nElt = 0, nNod = 0;
+    Long degenFaces = 0;
+    std::map<FaceKey,int> faceCount;
     Vector<Long> shape(Element::NNODE+1, 0);
 
     for (int lev = 0; lev < m_nlev; ++lev) {
@@ -491,6 +508,24 @@ AMRComplex::VerifyReport AMRComplex::verify () const
                     if (!seen) { ++distinct; }
                 }
                 ++shape[distinct];
+
+                // Faces of this element, each reduced to its set of distinct
+                // gids. A face shared by two cells must present the same set
+                // from both sides; anything else is a T-junction.
+                for (int f = 0; f < NFACE; ++f) {
+                    FaceKey key;
+                    key[0] = key[1] = key[2] = key[3] = -1;
+                    int nd = 0;
+                    for (int c = 0; c < 4; ++c) {
+                        const long g = cn[FACE[f][c]].gid;
+                        bool seen = false;
+                        for (int q = 0; q < nd; ++q) { if (key[q]==g) { seen=true; break; } }
+                        if (!seen) { key[nd++] = g; }
+                    }
+                    if (nd < 3) { ++degenFaces; continue; }
+                    std::sort(key.begin(), key.begin()+nd);
+                    ++faceCount[key];
+                }
 
                 // Corner offsets from corner 0, minimum image in periodic
                 // directions. Identity is topological, so a wrap element's
@@ -548,6 +583,13 @@ AMRComplex::VerifyReport AMRComplex::verify () const
     ParallelDescriptor::ReduceLongSum(nNod);
     ParallelDescriptor::ReduceLongSum(shape.dataPtr(), shape.size());
 
+    for (const auto& fc : faceCount) {
+        if      (fc.second == 1) { ++r.facesBoundary; }
+        else if (fc.second == 2) { ++r.facesInterior; }
+        else                     { ++r.facesBad; }
+    }
+    r.facesDegenerate = degenFaces;
+
     r.elementVolume = volSum;
     r.relError      = (dvol > 0 ? (volSum - dvol)/dvol : Real(0.0));
     r.nElements     = nElt;
@@ -582,6 +624,14 @@ void AMRComplex::reportVerify (const VerifyReport& r) const
 #endif
         Print() << "    " << s << nm << " : " << r.shape[s] << "\n";
     }
+
+    Print() << "  face census:\n";
+    Print() << "    interior (incidence 2) : " << r.facesInterior << "\n";
+    Print() << "    boundary (incidence 1) : " << r.facesBoundary << "\n";
+    Print() << "    non-manifold (>2)      : " << r.facesBad << "\n";
+    Print() << "    degenerate (<3 nodes)  : " << r.facesDegenerate << "\n";
+    Print() << "    face-conforming        : "
+            << (r.faceConforming() ? "yes" : "NO") << "\n";
 
     if (!r.passed()) {
         Print() << "  RESULT: FAIL -- the complex does not tile the domain.\n"

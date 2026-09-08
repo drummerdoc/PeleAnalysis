@@ -135,8 +135,19 @@ public:
         // is what enumerates the cases the tet subdivision must handle.
         std::array<long, Element::NNODE + 1> shape{};
 
+        // Face-incidence census. The complex tiling the domain by volume does
+        // NOT imply it is face-conforming: volume is additive over any
+        // decomposition, so a mesh with T-junctions at coarse-fine interfaces
+        // closes exactly while still failing to share faces. Marching tets
+        // needs face-conformity, so it has to be measured separately.
+        long facesInterior = 0;   // incidence 2 -- correct
+        long facesBoundary = 0;   // incidence 1 -- domain wall, expected
+        long facesBad      = 0;   // incidence >2 -- non-manifold
+        long facesDegenerate = 0; // collapsed to a point or an edge
+
         bool passed (amrex::Real tol = 1.0e-12) const noexcept
             { return std::abs(relError) < tol; }
+        bool faceConforming () const noexcept { return facesBad == 0; }
     };
 
     explicit AMRComplex (const Params& params);
