@@ -4,6 +4,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
+#include <fstream>
+#include <map>
 
 using namespace amrex;
 
@@ -127,6 +130,7 @@ int AMRContour::simplexify (const Node (&cn)[Element::NNODE],
 long AMRContour::edgeVertex (long ga, long gb,
                              const RealVect& pa, const RealVect& pb,
                              Real fa, Real fb,
+                             const Real* da, const Real* db,
                              const RealVect& origin)
 {
     std::pair<long,long> key = (ga < gb) ? std::make_pair(ga,gb)
@@ -140,6 +144,9 @@ long AMRContour::edgeVertex (long ga, long gb,
     const RealVect& p1 = (ga < gb) ? pb : pa;
     const Real      v0 = (ga < gb) ? fa : fb;
     const Real      v1 = (ga < gb) ? fb : fa;
+
+    const Real* d0 = (ga < gb) ? da : db;
+    const Real* d1 = (ga < gb) ? db : da;
 
     const Real den = v1 - v0;
     const Real t   = (den == Real(0.0)) ? Real(0.5) : (m_isoVal - v0)/den;
@@ -163,6 +170,16 @@ long AMRContour::edgeVertex (long ga, long gb,
             while (x >= phi[d]) { x -= L; }
         }
         pw[d] = x;
+    }
+
+    // Every carried component at the same parameter as the position. Because
+    // the vertex is cached on its node-edge key, this is computed once and
+    // every element sharing that edge gets the identical values -- across
+    // levels and across the periodic wrap -- rather than each recomputing and
+    // being reconciled afterwards.
+    const int nc = m_cx.nComp();
+    for (int n = 0; n < nc; ++n) {
+        m_vertData.push_back(d0[n] + t*(d1[n] - d0[n]));
     }
 
     const long idx = long(m_verts.size());
@@ -233,7 +250,9 @@ AMRContour::AMRContour (const AMRComplex& cx, int comp, Real isoVal,
                 for (int k = 0; k < 2; ++k) {
                     v[nv++] = edgeVertex(cn[apex].gid, cn[rest[k]].gid,
                                          q[apex], q[rest[k]],
-                                         fv[apex], fv[rest[k]], o);
+                                         fv[apex], fv[rest[k]],
+                                         &vals[std::size_t(apex)*std::size_t(nc)],
+                                         &vals[std::size_t(rest[k])*std::size_t(nc)], o);
                 }
             }
 #else
@@ -243,7 +262,9 @@ AMRContour::AMRContour (const AMRComplex& cx, int comp, Real isoVal,
                 for (int k = 0; k < 3; ++k) {
                     v[nv++] = edgeVertex(cn[apex].gid, cn[rest[k]].gid,
                                          q[apex], q[rest[k]],
-                                         fv[apex], fv[rest[k]], o);
+                                         fv[apex], fv[rest[k]],
+                                         &vals[std::size_t(apex)*std::size_t(nc)],
+                                         &vals[std::size_t(rest[k])*std::size_t(nc)], o);
                 }
             } else {
                 // Two-two split: the four crossings form a quad, listed
@@ -255,7 +276,9 @@ AMRContour::AMRContour (const AMRComplex& cx, int comp, Real isoVal,
                 for (int k = 0; k < 4; ++k) {
                     v[nv++] = edgeVertex(cn[ea[k]].gid, cn[eb[k]].gid,
                                          q[ea[k]], q[eb[k]],
-                                         fv[ea[k]], fv[eb[k]], o);
+                                         fv[ea[k]], fv[eb[k]],
+                                         &vals[std::size_t(ea[k])*std::size_t(nc)],
+                                         &vals[std::size_t(eb[k])*std::size_t(nc)], o);
                 }
             }
 #endif
@@ -417,6 +440,152 @@ void AMRContour::reportVerify (const Report& r) const
         Print() << "~   non-manifold  : " << r.edgesBad << "\n";
     }
     Print() << std::endl;
+}
+
+//
+// MEF output.
+//
+// Format, matching what surfMEFtoDAT and the *MEF tools read:
+//   line   title
+//   line   "X Y [Z] var1 var2 ..."
+//   line   "<nElts> <nodesPerElt>"
+//   binary FArrayBox over Box(0..nPts-1,0,0) with SPACEDIM+nComp components,
+//          laid out NODE-major -- the fab is a container for the blob, not an
+//          AMReX-ordered array
+//   binary nElts*nodesPerElt ints, 1-BASED
+//
+void AMRContour::writeMEF (const std::string& outfile,
+                           const std::string& label,
+                           const Vector<std::string>& varnames) const
+{
+    const int nc  = m_cx.nComp();
+    const int nnd = AMREX_SPACEDIM + nc;          // per-node reals
+    const int NV  = SurfElement::NVERT;
+
+    // Pack this rank's share: each vertex as (key, coords, values), each
+    // element as the KEYS of its vertices. Keys, never indices -- an index is
+    // meaningless on another rank, which is the mistake this file has already
+    // made once.
+    Vector<Long> vkey; vkey.reserve(std::size_t(2)*m_verts.size());
+    Vector<Real> vdat; vdat.reserve(std::size_t(nnd)*m_verts.size());
+    for (std::size_t i = 0; i < m_verts.size(); ++i) {
+        vkey.push_back(Long(m_vertKey[i].first));
+        vkey.push_back(Long(m_vertKey[i].second));
+        for (int d = 0; d < AMREX_SPACEDIM; ++d) { vdat.push_back(m_verts[i][d]); }
+        for (int n = 0; n < nc; ++n) {
+            vdat.push_back(m_vertData[std::size_t(i)*std::size_t(nc)+std::size_t(n)]);
+        }
+    }
+    Vector<Long> ekey; ekey.reserve(std::size_t(2)*NV*m_tris.size());
+    for (const auto& t : m_tris) {
+        for (int k = 0; k < NV; ++k) {
+            ekey.push_back(Long(m_vertKey[t.v[k]].first));
+            ekey.push_back(Long(m_vertKey[t.v[k]].second));
+        }
+    }
+
+#ifdef AMREX_USE_MPI
+    if (ParallelDescriptor::NProcs() > 1) {
+        auto gatherL = [] (Vector<Long>& v) {
+            const int nproc = ParallelDescriptor::NProcs();
+            const int ioproc = ParallelDescriptor::IOProcessorNumber();
+            int cnt = int(v.size());
+            Vector<int> cnts(nproc,0), offs(nproc,0);
+            MPI_Gather(&cnt,1,MPI_INT,cnts.dataPtr(),1,MPI_INT,ioproc,
+                       ParallelDescriptor::Communicator());
+            Vector<Long> recv;
+            if (ParallelDescriptor::IOProcessor()) {
+                for (int i=1;i<nproc;++i) { offs[i]=offs[i-1]+cnts[i-1]; }
+                recv.resize(std::size_t(offs[nproc-1]+cnts[nproc-1]));
+            }
+            MPI_Gatherv(v.dataPtr(),cnt,MPI_LONG_LONG,recv.dataPtr(),
+                        cnts.dataPtr(),offs.dataPtr(),MPI_LONG_LONG,ioproc,
+                        ParallelDescriptor::Communicator());
+            v.swap(recv);
+        };
+        auto gatherR = [] (Vector<Real>& v) {
+            const int nproc = ParallelDescriptor::NProcs();
+            const int ioproc = ParallelDescriptor::IOProcessorNumber();
+            int cnt = int(v.size());
+            Vector<int> cnts(nproc,0), offs(nproc,0);
+            MPI_Gather(&cnt,1,MPI_INT,cnts.dataPtr(),1,MPI_INT,ioproc,
+                       ParallelDescriptor::Communicator());
+            Vector<Real> recv;
+            if (ParallelDescriptor::IOProcessor()) {
+                for (int i=1;i<nproc;++i) { offs[i]=offs[i-1]+cnts[i-1]; }
+                recv.resize(std::size_t(offs[nproc-1]+cnts[nproc-1]));
+            }
+            MPI_Gatherv(v.dataPtr(),cnt,ParallelDescriptor::Mpi_typemap<Real>::type(),
+                        recv.dataPtr(),cnts.dataPtr(),offs.dataPtr(),
+                        ParallelDescriptor::Mpi_typemap<Real>::type(),ioproc,
+                        ParallelDescriptor::Communicator());
+            v.swap(recv);
+        };
+        gatherL(vkey);
+        gatherR(vdat);
+        gatherL(ekey);
+    }
+#endif
+
+    if (!ParallelDescriptor::IOProcessor()) { return; }
+
+    // Merge duplicates by key and order the global node list by key. Both the
+    // merge and the ordering are exact and rank-count independent: no
+    // tolerance, and no dependence on who saw a vertex first.
+    const std::size_t nrecv = vkey.size()/2;
+    std::map<std::pair<Long,Long>, std::size_t> first;
+    for (std::size_t i = 0; i < nrecv; ++i) {
+        first.emplace(std::make_pair(vkey[2*i], vkey[2*i+1]), i);
+    }
+    std::map<std::pair<Long,Long>, long> renum;
+    long idx = 0;
+    for (const auto& kv : first) { renum[kv.first] = idx++; }
+    const long nPts = idx;
+
+    Vector<Real> nodes(std::size_t(nPts)*std::size_t(nnd));
+    for (const auto& kv : first) {
+        const long j = renum[kv.first];
+        const std::size_t src = kv.second;
+        for (int k = 0; k < nnd; ++k) {
+            nodes[std::size_t(j)*std::size_t(nnd)+std::size_t(k)]
+                = vdat[src*std::size_t(nnd)+std::size_t(k)];
+        }
+    }
+
+    const long nElts = long(ekey.size()/(2*NV));
+    Vector<int> conn(std::size_t(nElts)*std::size_t(NV));
+    for (long e = 0; e < nElts; ++e) {
+        for (int k = 0; k < NV; ++k) {
+            const std::size_t o = std::size_t(e)*std::size_t(2*NV)+std::size_t(2*k);
+            const auto it = renum.find(std::make_pair(ekey[o], ekey[o+1]));
+            AMREX_ALWAYS_ASSERT(it != renum.end());
+            conn[std::size_t(e)*std::size_t(NV)+std::size_t(k)] = int(it->second) + 1;  // 1-based
+        }
+    }
+
+    std::string vars = "X Y";
+#if (AMREX_SPACEDIM == 3)
+    vars += " Z";
+#endif
+    for (const auto& v : varnames) { vars += " " + v; }
+
+    // The fab is only a carrier for the blob; the reader indexes it
+    // node-major, so it is filled node-major here too.
+    FArrayBox fab(Box(IntVect::TheZeroVector(),
+                      IntVect(AMREX_D_DECL(int(nPts)-1,0,0))), nnd);
+    std::memcpy(fab.dataPtr(), nodes.dataPtr(), nodes.size()*sizeof(Real));
+
+    std::ofstream ofs(outfile.c_str(),
+                      std::ios::out|std::ios::trunc|std::ios::binary);
+    ofs << label << std::endl;
+    ofs << vars  << std::endl;
+    ofs << nElts << " " << NV << std::endl;
+    fab.writeOn(ofs);
+    ofs.write((char*)conn.dataPtr(), sizeof(int)*conn.size());
+    ofs.close();
+
+    Print() << "  wrote " << outfile << ": " << nPts << " nodes, "
+            << nElts << " elements, " << nnd << " components per node\n";
 }
 
 } // namespace amrcomplex

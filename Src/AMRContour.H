@@ -90,7 +90,28 @@ public:
     Report verify () const;
     void reportVerify (const Report& r) const;
 
+    // Write the surface in MEF, the format the *MEF toolchain and
+    // surfMEFtoDAT read: a title line, a variable-name line, "nElts
+    // nodesPerElt", a node blob written as an FArrayBox in NODE-major order,
+    // and 1-based connectivity as raw ints.
+    //
+    // Under MPI this gathers to the IO processor, as isosurface.cpp does --
+    // the same scaling wall, and the reason a .pvtu path exists on the
+    // roadmap. It differs in one respect that matters: duplicate vertices are
+    // merged by their node-edge KEY, not by comparing coordinates, so the
+    // merge is exact and the global node ordering is a sort on those keys and
+    // therefore identical at any rank count.
+    void writeMEF (const std::string& outfile,
+                   const std::string& label,
+                   const amrex::Vector<std::string>& varnames) const;
+
     const amrex::Vector<amrex::RealVect>& vertices () const noexcept { return m_verts; }
+
+    // Interpolated field values carried on the surface, nComp per vertex,
+    // vertex-major. Every component is interpolated at the SAME parameter as
+    // the position -- the one determined by the isosurface component -- which
+    // is the convention isosurface.cpp uses.
+    const amrex::Vector<amrex::Real>& vertexData () const noexcept { return m_vertData; }
     const amrex::Vector<SurfElement>&    surfElements () const noexcept { return m_tris; }
 
 private:
@@ -114,9 +135,12 @@ private:
     static int simplexify (const Node (&cn)[Element::NNODE],
                            int simp[6][AMREX_SPACEDIM+1], bool minGidDiagonal);
 
+    // da/db are the full component vectors at the two ends; every one is
+    // interpolated at the parameter the isosurface component determines.
     long edgeVertex (long ga, long gb,
                      const amrex::RealVect& pa, const amrex::RealVect& pb,
                      amrex::Real fa, amrex::Real fb,
+                     const amrex::Real* da, const amrex::Real* db,
                      const amrex::RealVect& origin);
 
     const AMRComplex& m_cx;
@@ -133,6 +157,7 @@ private:
     // in indices. Getting that wrong is what made the first MPI run report an
     // open surface on a closed one.
     amrex::Vector<std::pair<long,long>>  m_vertKey;
+    amrex::Vector<amrex::Real>           m_vertData;   // nComp per vertex
     amrex::Vector<SurfElement>           m_tris;
     amrex::Real                          m_area = 0;   // summed in element frames
 };

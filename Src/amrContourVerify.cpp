@@ -18,9 +18,16 @@ int main (int argc, char* argv[])
         pp.query("finestLevel", p.finestLevel);
         pp.query("verbose", p.verbose);
 
+        // The iso component comes first; any further names are carried on the
+        // surface as sampled data, exactly as isosurface.cpp does.
         std::string var("dist");
         pp.query("isoCompName", var);
         p.varnames = {var};
+        if (const int nv = pp.countval("varnames")) {
+            Vector<std::string> extra(nv);
+            pp.getarr("varnames", extra, 0, nv);
+            for (const auto& e : extra) { if (e != var) { p.varnames.push_back(e); } }
+        }
 
         Real isoVal = 0.0;
         pp.query("isoVal", isoVal);
@@ -53,6 +60,13 @@ int main (int argc, char* argv[])
 #endif
         }
         amrcomplex::AMRContour ct(cx, 0, isoVal, diagRule != 0);
+
+        std::string outfile;
+        pp.query("outfile", outfile);
+        if (!outfile.empty()) {
+            char buf[72]; std::snprintf(buf, sizeof(buf), "%g", isoVal);
+            ct.writeMEF(outfile, std::string(buf), p.varnames);
+        }
         const auto sr = ct.verify();
         ct.reportVerify(sr);
 
@@ -71,6 +85,29 @@ int main (int argc, char* argv[])
 #endif
             Print() << "  exact measure  : " << exact << "\n";
             Print() << "  relative error : " << (sr.area-exact)/exact << "\n";
+        }
+        // Exactness check on the carried components. makeTestPlt writes a
+        // linear field per direction; linear interpolation of a linear
+        // function along an edge is exact, so each sampled value must equal
+        // the vertex's own coordinate to roundoff. Anything larger means the
+        // sampling is using a different parameter from the position, or the
+        // wrong endpoint values.
+        bool checkLinear = false;
+        pp.query("check_linear_components", checkLinear);
+        if (checkLinear && cx.nComp() >= 1+AMREX_SPACEDIM) {
+            const auto& V = ct.vertices();
+            const auto& D = ct.vertexData();
+            const int nc = cx.nComp();
+            Real worst = 0;
+            for (std::size_t i = 0; i < V.size(); ++i) {
+                for (int d = 0; d < AMREX_SPACEDIM; ++d) {
+                    const Real got = D[std::size_t(i)*std::size_t(nc)+std::size_t(1+d)];
+                    worst = std::max(worst, std::abs(got - V[i][d]));
+                }
+            }
+            ParallelDescriptor::ReduceRealMax(worst);
+            Print() << "  carried-component exactness: worst |sampled - coord| = "
+                    << worst << (worst < Real(1.0e-12) ? "  PASS\n" : "  FAIL\n");
         }
         Print() << std::endl;
     }

@@ -75,7 +75,12 @@ int main (int argc, char* argv[])
             }
             grids[lev].maxSize(max_grid_size);
             dmap[lev].define(grids[lev]);
-            data[lev].define(grids[lev], dmap[lev], 1, 0);
+            // dist, plus one linear field per direction. A linear function
+            // interpolated linearly along an edge is exact, so a component
+            // carrying "x" must come back on the surface equal to the
+            // vertex's own x coordinate -- an exact identity to check the
+            // component sampling against, not an approximate one.
+            data[lev].define(grids[lev], dmap[lev], 1+AMREX_SPACEDIM, 0);
 
             const auto dx  = geom[lev].CellSizeArray();
             const auto plo = geom[lev].ProbLoArray();
@@ -94,7 +99,10 @@ int main (int argc, char* argv[])
                     AMREX_D_TERM(r2 += (x-Real(0.5))*(x-Real(0.5));,
                                  r2 += (y-Real(0.5))*(y-Real(0.5));,
                                  r2 += (z-Real(0.5))*(z-Real(0.5)););
-                    a(i,j,k) = std::sqrt(r2) - Real(0.3);
+                    a(i,j,k,0) = std::sqrt(r2) - Real(0.3);
+                    AMREX_D_TERM(a(i,j,k,1) = x;,
+                                 a(i,j,k,2) = y;,
+                                 a(i,j,k,3) = z;);
                 });
             }
         }
@@ -103,7 +111,8 @@ int main (int argc, char* argv[])
         Vector<int> steps(nlevels, 0);
         for (int lev = 0; lev < nlevels; ++lev) { mfs[lev] = &data[lev]; }
 
-        WriteMultiLevelPlotfile(outfile, nlevels, mfs, {"dist"}, geom,
+        Vector<std::string> vnames = {"dist", AMREX_D_DECL("xco","yco","zco")};
+        WriteMultiLevelPlotfile(outfile, nlevels, mfs, vnames, geom,
                                 Real(0.0), steps, rr);
 
         Print() << "wrote " << outfile << ": " << nlevels << " level(s), base "
