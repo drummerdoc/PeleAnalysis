@@ -250,7 +250,10 @@ echo
 # --------------------------------------------------------------------------
 if [ -n "$CONTOUR" ]; then
 echo "=== 4. contour invariance ============================================"
-cinv () { sed -n '/=== AMRContour verify ===/,/closed surface/p' | grep -v '^$' | grep -v '^~'; }
+# End the range on the "closed" line, not on a longer phrase inside it: this
+# extractor was silently broken once already when that line was reworded, and
+# an unterminated sed range runs to end of file and sweeps in whatever follows.
+cinv () { sed -n '/=== AMRContour verify ===/,/^  closed /p' | grep -v '^$' | grep -v '^~'; }
 for c in $CASES; do
   $MPIRUN -n 1 "$CONTOUR" infile=$c is_per="$ALLPER" isoVal=0 2>/dev/null | cinv > "ct_${c}_ref.txt"
   for n in $RANKS; do

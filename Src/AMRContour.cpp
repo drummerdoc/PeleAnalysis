@@ -403,8 +403,14 @@ void AMRContour::reportVerify (const Report& r) const
     Print() << "  closed         : " << (r.closed() ? "yes" : "NO")
             << "  (every boundary item shared by exactly two elements)\n";
     if (ParallelDescriptor::NProcs() == 1) {
-        Print() << "  boundary items : " << r.nEdges << "\n";
-        Print() << "  Euler          : " << r.eulerChar << "\n";
+        // Marked "~" like every other non-invariant: these need the
+        // deduplicated vertex and boundary-item counts, which are only exact
+        // at one rank, so they are PRESENT at one rank and ABSENT above it.
+        // A harness comparing the block for equality must drop them, and a
+        // line that appears conditionally is exactly as bad as one whose
+        // value drifts.
+        Print() << "~ boundary items : " << r.nEdges << "\n";
+        Print() << "~ Euler          : " << r.eulerChar << "\n";
         Print() << "~ edge census (rank-local, exact only at one rank):\n";
         Print() << "~   interior (2)  : " << r.edgesInterior << "\n";
         Print() << "~   boundary (1)  : " << r.edgesBoundary << "\n";
