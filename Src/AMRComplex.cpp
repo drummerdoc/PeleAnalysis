@@ -268,7 +268,7 @@ void AMRComplex::stampCoarseParents (int lev)
 }
 
 //
-// Ownership of an element, by its base cell.
+// Ownership of elements, by base-cell region.
 //
 // The obvious rule -- "the box whose valid region contains the base cell" --
 // is wrong, and wrong in a way that silently loses exactly the elements this
@@ -284,49 +284,87 @@ void AMRComplex::stampCoarseParents (int lev)
 // communication: the same element is produced by exactly one rank, at any
 // rank count.
 //
-bool AMRComplex::ownsBaseCell (int lev, const IntVect& iv, int boxIdx) const
+// This is answered once per box as box algebra, not once per cell as a query.
+// The shell is at most AMREX_SPACEDIM boxes, so the whole ownership question
+// costs a handful of BoxArray::intersections calls per grid rather than one
+// or two per ghost cell.
+//
+namespace {
+
+// bl minus everything in cut.
+BoxList subtractFrom (const BoxList& bl, const BoxList& cut)
 {
+    if (cut.isEmpty()) { return bl; }
+    BoxList out;
+    for (const Box& b : bl) { out.join(amrex::complementIn(b, cut)); }
+    return out;
+}
+
+} // anonymous namespace
+
+BoxList AMRComplex::ownedBaseRegions (int lev, int boxIdx) const
+{
+    const BoxArray& ba = m_grids[lev];
+    const Box       V  = ba[boxIdx];
+
+    BoxList owned;
+    owned.push_back(V);          // valid boxes partition the level: all mine
+
+    Box B = V;
+    for (int d = 0; d < AMREX_SPACEDIM; ++d) { B.growLo(d,1); }
+    BoxList shell = amrex::boxDiff(B, V);
+    if (shell.isEmpty()) { return owned; }
+
     std::vector<std::pair<int,Box>> isects;
 
-    // Valid cells belong to the box holding them; valid boxes partition a level.
-    m_grids[lev].intersections(Box(iv,iv), isects);
-    if (!isects.empty()) { return isects[0].first == boxIdx; }
-
-    // A base cell outside the level's domain in a periodic direction is the
-    // wrap image of a cell inside it. If that image is valid, the identical
-    // element -- same node pair, since identity is topological -- is already
-    // produced there, and generating it here too would double-count the whole
-    // low face. Only if the image is not valid is this a genuine stitch base
-    // reached through the wrap.
+    // Drop shell cells that are valid at this level, whether directly or
+    // through the periodic wrap. Either way the identical element -- same
+    // node set, since identity is topological -- is produced where the cell
+    // is valid, and generating it here too would double-count the low face.
+    Vector<IntVect> shifts;
     const Box& dom = m_geom[lev].Domain();
-    if (!dom.contains(iv)) {
-        IntVect jv = iv;
-        bool wrapped = false;
-        for (int d = 0; d < AMREX_SPACEDIM; ++d) {
-            if (!m_params.is_per[d]) { continue; }
-            const int len = dom.length(d);
-            while (jv[d] < dom.smallEnd(d)) { jv[d] += len; wrapped = true; }
-            while (jv[d] > dom.bigEnd(d))   { jv[d] -= len; wrapped = true; }
+
+    BoxList remaining;
+    for (const Box& P : shell) {
+        BoxList acc; acc.push_back(P);
+
+        Vector<IntVect> allShifts(1, IntVect::TheZeroVector());
+        if (m_geom[lev].isAnyPeriodic() && !dom.contains(P)) {
+            m_geom[lev].periodicShift(dom, P, shifts);
+            for (const auto& sv : shifts) { allShifts.push_back(sv); }
         }
-        if (wrapped) {
-            m_grids[lev].intersections(Box(jv,jv), isects);
-            if (!isects.empty()) { return false; }
+
+        for (const auto& sv : allShifts) {
+            ba.intersections(Box(P).shift(sv), isects);
+            if (isects.empty()) { continue; }
+            BoxList cut;
+            for (const auto& pr : isects) { cut.push_back(Box(pr.second).shift(-sv)); }
+            acc = subtractFrom(acc, cut);
+            if (acc.isEmpty()) { break; }
         }
+        remaining.join(acc);
     }
 
-    // A stamped ghost. Candidates are the boxes meeting this element's corner
-    // footprint; of those, the ones that actually visit iv are the ones whose
-    // low-grown valid box contains it.
-    const Box footprint(iv, iv + IntVect::TheUnitVector());
-    m_grids[lev].intersections(footprint, isects);
+    // Of the genuine stitch bases that survive, a cell is visited by box A
+    // exactly when it lies in A's low-grown valid box. The lowest such index
+    // owns it; anything claimed by a lower index is not ours.
+    for (const Box& P : remaining) {
+        Box q = P;
+        for (int d = 0; d < AMREX_SPACEDIM; ++d) { q.growHi(d,1); }
+        ba.intersections(q, isects);
 
-    int owner = std::numeric_limits<int>::max();
-    for (const auto& pr : isects) {
-        Box lo = m_grids[lev][pr.first];
-        for (int d = 0; d < AMREX_SPACEDIM; ++d) { lo.growLo(d,1); }
-        if (lo.contains(iv)) { owner = std::min(owner, pr.first); }
+        BoxList claimed;
+        for (const auto& pr : isects) {
+            if (pr.first >= boxIdx) { continue; }
+            Box lo = ba[pr.first];
+            for (int d = 0; d < AMREX_SPACEDIM; ++d) { lo.growLo(d,1); }
+            const Box ov = lo & P;
+            if (ov.ok()) { claimed.push_back(ov); }
+        }
+        owned.join(amrex::complementIn(P, claimed));
     }
-    return owner == boxIdx;
+
+    return owned;
 }
 
 //
@@ -359,14 +397,12 @@ void AMRComplex::buildElements ()
 
     for (int lev = 0; lev < m_nlev; ++lev) {
         for (MFIter mfi(m_nodes[lev]); mfi.isValid(); ++mfi) {
-            Box bbx = mfi.validbox();
-            for (int d = 0; d < AMREX_SPACEDIM; ++d) { bbx.growLo(d,1); }
-            const int myBox = mfi.index();
-            auto const& a  = m_nodes[lev].const_array(mfi);
+            auto const& a = m_nodes[lev].const_array(mfi);
+            const BoxList owned = ownedBaseRegions(lev, mfi.index());
+            for (const Box& bbx : owned) {
             AMREX_LOOP_3D(bbx, i, j, k,
             {
                 const IntVect iv(AMREX_D_DECL(i,j,k));
-                if (!ownsBaseCell(lev, iv, myBox)) { continue; }
                 Element e;
                 bool ok = true;
                 for (int c = 0; c < Element::NNODE; ++c) {
@@ -377,6 +413,7 @@ void AMRComplex::buildElements ()
                 }
                 if (ok) { m_elements.push_back(e); }
             });
+            }
         }
     }
 
@@ -426,14 +463,11 @@ AMRComplex::VerifyReport AMRComplex::verify () const
                 if (a(i,j,k).type == Node::VALID) { ++nNod; }
             });
 
-            Box bbx = mfi.validbox();
-            for (int d = 0; d < AMREX_SPACEDIM; ++d) { bbx.growLo(d,1); }
-            const int myBox = mfi.index();
-
+            const BoxList owned = ownedBaseRegions(lev, mfi.index());
+            for (const Box& bbx : owned) {
             AMREX_LOOP_3D(bbx, i, j, k,
             {
                 const IntVect iv(AMREX_D_DECL(i,j,k));
-                if (!ownsBaseCell(lev, iv, myBox)) { continue; }
                 Node cn[Element::NNODE];
                 bool ok = true;
                 for (int c = 0; c < Element::NNODE; ++c) {
@@ -505,6 +539,7 @@ AMRComplex::VerifyReport AMRComplex::verify () const
                 }
 #endif
             });
+            }
         }
     }
 

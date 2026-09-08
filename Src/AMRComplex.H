@@ -162,11 +162,11 @@ private:
 
     void stampCoarseParents (int lev);
 
-    // Which box owns the element whose base cell is iv. See AMRComplex.cpp;
-    // the answer is not simply "the box whose valid region contains iv",
-    // because the element that bridges a coarse-fine interface has its base
-    // in a ghost cell stamped from the coarser level.
-    bool ownsBaseCell (int lev, const amrex::IntVect& iv, int boxIdx) const;
+    // The base cells this box owns, as regions. See AMRComplex.cpp; the
+    // answer is not simply "this box's valid region", because the element
+    // bridging a coarse-fine interface has its base in a ghost cell stamped
+    // from the coarser level.
+    amrex::BoxList ownedBaseRegions (int lev, int boxIdx) const;
 
     // Volume the complex should occupy: the full domain in periodic
     // directions, and the domain less one level-0 cell in non-periodic ones,
