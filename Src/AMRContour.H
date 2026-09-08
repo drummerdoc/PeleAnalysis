@@ -48,8 +48,13 @@ public:
     // checkDeterminism recomputes every cached vertex and compares bitwise.
     // It must be set at construction because the constructor does all the
     // work. See the note on m_checkDeterminism.
+    // orientElements=false leaves the winding as the marching case happens
+    // to produce it. That is the state of the code before orientation was
+    // imposed, kept as a negative control: if the consistency check cannot
+    // tell it apart from the oriented result, the check is worthless.
     AMRContour (const AMRComplex& cx, int comp, amrex::Real isoVal,
-                bool minGidDiagonal = true, bool checkDeterminism = false);
+                bool minGidDiagonal = true, bool checkDeterminism = false,
+                bool orientElements = true);
 
     struct Report
     {
@@ -80,6 +85,28 @@ public:
         // tet subdivision. The volume gate in AMRComplex cannot: tets of a
         // hexahedron sum to its volume whichever diagonals they use.
         unsigned long long edgeParity = 0;
+
+        // Orientation.
+        //
+        // A closed surface is consistently oriented exactly when every
+        // interior edge is traversed in OPPOSITE directions by the two
+        // elements sharing it. That is combinatorial and exact -- no normals,
+        // no tolerance, no reference direction needed after the fact.
+        //
+        // orientBad is the rank-local count of boundary items that fail it.
+        // orientParity is the rank-independent form: each traversal
+        // contributes +hash or -hash by direction, so a correctly oriented
+        // pair cancels wherever the two elements live, and the global sum is
+        // exactly zero.
+        long orientBad = 0;
+        long orientParity = 0;
+
+        // Enclosed volume by the divergence theorem, with the orientation as
+        // built (normals toward increasing f). Meaningful only for a surface
+        // that does not cross a periodic face; diagnostic, not an invariant.
+        amrex::Real signedVolume = 0;
+
+        bool oriented () const noexcept { return orientParity == 0; }
 
         // Modular sum over triangles of a hash of their three vertex KEYS.
         // Additive and order-independent, and rank-independent because each
@@ -163,6 +190,7 @@ private:
     int               m_comp;
     amrex::Real       m_isoVal;
     bool              m_minGidDiag;
+    bool              m_orient = true;
 
     std::map<std::pair<long,long>, long> m_vertCache;  // edge (gid,gid) -> vertex
     amrex::Vector<amrex::RealVect>       m_verts;      // canonical, wrapped

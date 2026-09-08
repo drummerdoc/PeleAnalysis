@@ -203,9 +203,10 @@ long AMRContour::edgeVertex (const Node& na, const Node& nb,
 }
 
 AMRContour::AMRContour (const AMRComplex& cx, int comp, Real isoVal,
-                        bool minGidDiagonal, bool checkDeterminism)
+                        bool minGidDiagonal, bool checkDeterminism,
+                        bool orientElements)
     : m_cx(cx), m_comp(comp), m_isoVal(isoVal), m_minGidDiag(minGidDiagonal),
-      m_checkDeterminism(checkDeterminism)
+      m_orient(orientElements), m_checkDeterminism(checkDeterminism)
 {
     const int nc = cx.nComp();
     AMREX_ALWAYS_ASSERT(comp >= 0 && comp < nc);
@@ -311,7 +312,6 @@ AMRContour::AMRContour (const AMRComplex& cx, int comp, Real isoVal,
                     }
                 }
                 if (degen) { continue; }
-                m_tris.push_back(se);
 
                 // Measure in the element frame, from the same interpolated
                 // positions, before any wrapping: area in 3D, length in 2D.
@@ -327,6 +327,55 @@ AMRContour::AMRContour (const AMRComplex& cx, int comp, Real isoVal,
                         w[a][d] = sd;
                     }
                 }
+                // Orient the element so its normal points toward INCREASING
+                // f -- the high side of the contour, the same side for every
+                // element on the surface.
+                //
+                // Nothing upstream fixes this: the vertex order comes out of
+                // the marching case, which follows the tet's corner order,
+                // which follows the cone construction. That is arbitrary
+                // relative to the geometry, so without this step neighbouring
+                // elements wind opposite ways at random. Normals, curvature,
+                // rendering and any enclosed-volume integral all depend on
+                // it, and isosurface.cpp's CheckSurfaceNormal is an empty
+                // stub, so this has never actually been guaranteed.
+                //
+                // The reference direction is from the below-value corners to
+                // the above-value corners of this simplex -- exact, local, and
+                // independent of the tet's handedness.
+                RealVect ref;
+                for (int d = 0; d < AMREX_SPACEDIM; ++d) {
+                    Real sa = 0, sb = 0;
+                    for (int a = 0; a < na; ++a) { sa += q[above[a]][d]; }
+                    for (int b = 0; b < nb; ++b) { sb += q[below[b]][d]; }
+                    ref[d] = sa/Real(na) - sb/Real(nb);
+                }
+#if (AMREX_SPACEDIM == 2)
+                {
+                    // In 2D the element is a segment; its normal is the
+                    // left-hand normal of v0->v1. Reverse the segment when
+                    // that points down-gradient.
+                    const Real tx = w[1][0]-w[0][0], ty = w[1][1]-w[0][1];
+                    if (m_orient && (ty*ref[0] - tx*ref[1]) < Real(0.0)) {
+                        std::swap(se.v[0], se.v[1]);
+                        std::swap(w[0], w[1]);
+                    }
+                }
+#else
+                {
+                    const Real a1x = w[1][0]-w[0][0], a1y = w[1][1]-w[0][1], a1z = w[1][2]-w[0][2];
+                    const Real a2x = w[2][0]-w[0][0], a2y = w[2][1]-w[0][1], a2z = w[2][2]-w[0][2];
+                    const Real nx = a1y*a2z - a1z*a2y;
+                    const Real ny = a1z*a2x - a1x*a2z;
+                    const Real nz = a1x*a2y - a1y*a2x;
+                    if (m_orient && (nx*ref[0] + ny*ref[1] + nz*ref[2]) < Real(0.0)) {
+                        std::swap(se.v[1], se.v[2]);
+                        std::swap(w[1], w[2]);
+                    }
+                }
+#endif
+                m_tris.push_back(se);
+
 #if (AMREX_SPACEDIM == 2)
                 const Real dx0 = w[1][0]-w[0][0];
                 const Real dy0 = w[1][1]-w[0][1];
@@ -360,7 +409,45 @@ AMRContour::Report AMRContour::verify () const
     // in 2D. Closure is the same statement either way -- every boundary item
     // shared by exactly two surface elements.
     const int NV = SurfElement::NVERT;
+    std::map<std::pair<long,long>,int> orientNet;   // local indices; serial only
+    Long orientSum = 0;
+    Real svol = 0;
+
     for (const auto& t : m_tris) {
+#if (AMREX_SPACEDIM == 3)
+        {   // Divergence theorem on the surface as oriented.
+            const RealVect& p0 = m_verts[t.v[0]];
+            const RealVect& p1 = m_verts[t.v[1]];
+            const RealVect& p2 = m_verts[t.v[2]];
+            svol += (p0[0]*(p1[1]*p2[2]-p1[2]*p2[1])
+                   - p0[1]*(p1[0]*p2[2]-p1[2]*p2[0])
+                   + p0[2]*(p1[0]*p2[1]-p1[1]*p2[0]))/Real(6.0);
+        }
+#endif
+        // Directed boundary items: in 3D the three directed edges; in 2D the
+        // tail and the head of the segment.
+        for (int k = 0; k < NV; ++k) {
+#if (AMREX_SPACEDIM == 2)
+            const std::pair<long,long> ka = m_vertKey[t.v[k]];
+            const std::pair<long,long> kb = ka;
+            const int sgn = (k == 0) ? -1 : +1;          // tail, then head
+            const long ia = t.v[k], ib = t.v[k];
+#else
+            const long ia = t.v[k], ib = t.v[(k+1)%NV];
+            const std::pair<long,long> ka = m_vertKey[ia];
+            const std::pair<long,long> kb = m_vertKey[ib];
+            const int sgn = (ka < kb) ? +1 : -1;
+#endif
+            long lo = ia, hi = ib;
+            if (lo > hi) { std::swap(lo,hi); }
+            orientNet[std::make_pair(lo,hi)] += sgn;
+
+            std::pair<long,long> k0 = ka, k1 = kb;
+            if (k1 < k0) { std::swap(k0,k1); }
+            const long hh = foldChecksum(edgeHash(k0,k1));
+            orientSum = ((orientSum + sgn*hh) % CHECKSUM_MOD + CHECKSUM_MOD) % CHECKSUM_MOD;
+        }
+
         for (int k = 0; k < NV; ++k) {
 #if (AMREX_SPACEDIM == 2)
             long a = t.v[k], b = t.v[k];
@@ -389,6 +476,8 @@ AMRContour::Report AMRContour::verify () const
         triSum = (triSum + foldChecksum(th)) % CHECKSUM_MOD;
     }
 
+    for (const auto& on : orientNet) { if (on.second != 0) { ++r.orientBad; } }
+
     Long ne = Long(edgeCount.size());
     for (const auto& ec : edgeCount) {
         if      (ec.second == 1) { ++r.edgesBoundary; }
@@ -401,6 +490,8 @@ AMRContour::Report AMRContour::verify () const
     ParallelDescriptor::ReduceLongSum(nt);
     ParallelDescriptor::ReduceLongSum(ne);
     ParallelDescriptor::ReduceLongSum(triSum);
+    ParallelDescriptor::ReduceLongSum(orientSum);
+    ParallelDescriptor::ReduceRealSum(svol);
 #ifdef AMREX_USE_MPI
     if (ParallelDescriptor::NProcs() > 1) {
         unsigned long long tmp = par;
@@ -419,7 +510,9 @@ AMRContour::Report AMRContour::verify () const
     r.eulerChar  = nv - ne + nt;         // 2 for a sphere
 #endif
     r.edgeParity  = par;
-    r.triChecksum = triSum % CHECKSUM_MOD;
+    r.triChecksum  = triSum % CHECKSUM_MOD;
+    r.orientParity = ((orientSum % CHECKSUM_MOD) + CHECKSUM_MOD) % CHECKSUM_MOD;
+    r.signedVolume = svol;
     return r;
 }
 
@@ -434,6 +527,17 @@ void AMRContour::reportVerify (const Report& r) const
             << ((AMREX_SPACEDIM == 2) ? "  (arc length)\n" : "  (area)\n");
     Print() << "  checksum tris  : " << r.triChecksum << "\n";
     Print() << "  checksum edges : " << r.edgeParity << "\n";
+    Print() << "  orientation    : " << (r.oriented() ? "consistent" : "INCONSISTENT")
+            << "  (normals toward increasing f; every interior edge traversed"
+            << " both ways)\n";
+    if (ParallelDescriptor::NProcs() == 1) {
+        Print() << "~ misoriented boundary items : " << r.orientBad << "\n";
+    }
+#if (AMREX_SPACEDIM == 3)
+    Print() << "~ enclosed volume: " << r.signedVolume
+            << "  (divergence theorem; only meaningful if the surface does not"
+            << " cross a periodic face)\n";
+#endif
     Print() << "  closed         : " << (r.closed() ? "yes" : "NO")
             << "  (every boundary item shared by exactly two elements)\n";
     if (ParallelDescriptor::NProcs() == 1) {

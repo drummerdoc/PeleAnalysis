@@ -66,7 +66,16 @@ int main (int argc, char* argv[])
         int checkDet = 1;
         pp.query("check_vertex_determinism", checkDet);
 
-        amrcomplex::AMRContour ct(cx, 0, isoVal, diagRule != 0, checkDet != 0);
+        // orient_elements=0 leaves the winding as the marching case produced
+        // it: the negative control for the orientation check.
+        int orientRule = 1;
+        pp.query("orient_elements", orientRule);
+        if (orientRule == 0) {
+            Print() << "WARNING: elements left UNORIENTED (negative control)\n";
+        }
+
+        amrcomplex::AMRContour ct(cx, 0, isoVal, diagRule != 0, checkDet != 0,
+                                  orientRule != 0);
         if (checkDet) {
             const long mm = ct.determinismMismatches();
             Print() << "  vertex determinism: " << mm
