@@ -7,6 +7,7 @@
 #include <cstring>
 #include <fstream>
 #include <map>
+#include <array>
 
 using namespace amrex;
 
@@ -563,13 +564,34 @@ void AMRContour::writeMEF (const std::string& outfile,
     }
 
     const long nElts = long(ekey.size()/(2*NV));
-    Vector<int> conn(std::size_t(nElts)*std::size_t(NV));
+    // Note: elts(std::size_t(nElts)) here would be a function declaration.
+    Vector<std::array<int,SurfElement::NVERT>> elts;
+    elts.resize(std::size_t(nElts));
     for (long e = 0; e < nElts; ++e) {
         for (int k = 0; k < NV; ++k) {
             const std::size_t o = std::size_t(e)*std::size_t(2*NV)+std::size_t(2*k);
             const auto it = renum.find(std::make_pair(ekey[o], ekey[o+1]));
             AMREX_ALWAYS_ASSERT(it != renum.end());
-            conn[std::size_t(e)*std::size_t(NV)+std::size_t(k)] = int(it->second) + 1;  // 1-based
+            elts[std::size_t(e)][k] = int(it->second);
+        }
+    }
+
+    // Canonicalise the ELEMENT order too. Nodes were already sorted by key,
+    // but the element list arrives in per-rank traversal order and was
+    // written in gather order, so the connectivity block differed between
+    // rank counts while the node block matched exactly.
+    //
+    // Sorting is on the index tuple AS WRITTEN, which leaves each element's
+    // own vertex order -- and therefore its orientation -- untouched. Every
+    // surface element is produced by exactly one cell, so the tuple is unique
+    // and this is a total order.
+    std::sort(elts.begin(), elts.end());
+
+    Vector<int> conn(std::size_t(nElts)*std::size_t(NV));
+    for (long e = 0; e < nElts; ++e) {
+        for (int k = 0; k < NV; ++k) {
+            conn[std::size_t(e)*std::size_t(NV)+std::size_t(k)]
+                = elts[std::size_t(e)][k] + 1;      // 1-based
         }
     }
 
