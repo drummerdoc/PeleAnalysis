@@ -25,13 +25,43 @@
 # DistributionMapping strategy instead, which changes the assignment without
 # changing anything else.
 #
-# Build first, with MPI:
+# ---------------------------------------------------------------------------
+# Running it
+#
+# Build both executables with MPI. AMREX_HOME defaults to ../../amrex relative
+# to Src, which is already right for a tree laid out as src/PeleAnalysis and
+# src/amrex side by side; COMP must match whatever you normally build with.
 #
 #   cd Src
-#   make -f GNUmakefile.AMRComplex USE_MPI=TRUE AMREX_HOME=<path> -j8
-#   make -f GNUmakefile.AMRComplex USE_MPI=TRUE AMREX_HOME=<path> EBASE=makeTestPlt -j8
+#   make -f GNUmakefile.AMRComplex USE_MPI=TRUE COMP=llvm -j8
+#   make -f GNUmakefile.AMRComplex USE_MPI=TRUE COMP=llvm EBASE=makeTestPlt -j8
 #
-# Then:  Tools/amrComplexMpiTest.sh [rank counts...]     (default: 1 2 3 4 7 8)
+# Then, from any writable directory:
+#
+#   /path/to/PeleAnalysis/Tools/amrComplexMpiTest.sh
+#
+# Everything is written under ./amrComplex_mpi_test; set WORK to put it
+# elsewhere. The script exits nonzero with the number of failures, so it can
+# be used as a gate.
+#
+#   Tools/amrComplexMpiTest.sh 1 2 4 6      # choose the rank counts
+#   WORK=/scratch/acx Tools/amrComplexMpiTest.sh
+#
+# Launcher. The script invokes "$MPIRUN -n <N> <exe>", which suits mpiexec,
+# mpirun and srun alike:
+#
+#   OpenMPI on a laptop  MPIRUN="mpirun --oversubscribe" Tools/amrComplexMpiTest.sh
+#                        -- required whenever a requested rank count exceeds
+#                           the physical core count, which 7 and 8 easily do.
+#                           MPICH and Intel MPI do not need it.
+#   Slurm                MPIRUN=srun Tools/amrComplexMpiTest.sh
+#                        -- from inside an salloc or a batch script sized for
+#                           the largest rank count requested.
+#
+# The cases are small on purpose: the largest is a three-level 64^3 hierarchy,
+# about 740k elements, a few seconds per run. This is a correctness gate, not
+# a scaling study, and it is meant to be cheap enough to run on every change.
+# ---------------------------------------------------------------------------
 #
 set -u
 
@@ -82,7 +112,11 @@ $MPIRUN -n 1 "$MAKEPLT" n_cell=32 nlevels=2 ref_ratio=4  outfile=mpi_R4 > /dev/n
 echo
 
 CASES="mpi_L1 mpi_L2 mpi_L3 mpi_R4"
-PERS="1|1 1 1 0|0 0 0 m|1 1 0"
+
+# Parallel arrays, not a single string: each periodicity setting contains
+# spaces, so a space-separated list would be split into nonsense.
+PER_TAG=(per111 per000 per110)
+PER_VAL=("1 1 1" "0 0 0" "1 1 0")
 
 # --------------------------------------------------------------------------
 # 1. Rank invariance.
@@ -95,8 +129,8 @@ PERS="1|1 1 1 0|0 0 0 m|1 1 0"
 # --------------------------------------------------------------------------
 echo "=== 1. rank invariance ==============================================="
 for c in $CASES; do
-  for pp in $PERS; do
-    tag=${pp%%|*}; per=${pp#*|}
+  for idx in "${!PER_TAG[@]}"; do
+    tag=${PER_TAG[$idx]}; per=${PER_VAL[$idx]}
     $MPIRUN -n 1 "$VERIFY" infile=$c is_per="$per" varnames=dist 2>/dev/null \
         | invariants > "ref_${c}_${tag}.txt"
     if ! grep -q "PASS" "ref_${c}_${tag}.txt"; then
