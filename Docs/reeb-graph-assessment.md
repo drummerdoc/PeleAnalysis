@@ -1153,3 +1153,77 @@ is named by a gid or a tuple of gids, never by a position in an array.
   stitch band. Degenerate hexes subdivide into poorly-shaped tets, and area is
   insensitive to that while curvature is not (§7.1).
 - Wall extrapolation (§7.2), still deliberately deferred.
+
+---
+
+## 14. Verified state (supersedes 13.5-13.6)
+
+Branch `amr-complex`. All suites pass in 2D and 3D, at 1-8 ranks, under every
+DistributionMapping strategy: `Tools/amrBuildAndTest.sh`.
+
+### 14.1 What is built
+
+| file | what |
+|---|---|
+| `Src/AMRComplex.{H,cpp}` | conforming multilevel complex, 2D and 3D |
+| `Src/AMRContour.{H,cpp}` | marching simplices, oriented, with carried components and MEF output |
+| `Src/amrComplexVerify.cpp`, `Src/amrContourVerify.cpp` | the gates |
+| `Src/makeTestPlt.cpp` | synthetic hierarchies: anisotropic cells, non-cubic domains, linear probe fields |
+| `Src/GNUmakefile.AMRComplex` | standalone, AMReX only, `DIM ?= 3` |
+| `Tools/amrComplexMpiTest.sh`, `Tools/amrContourMefTest.sh`, `Tools/amrBuildAndTest.sh` | the suites |
+
+### 14.2 What is guaranteed
+
+- **The complex tiles exactly and is face-conforming** -- 1-3 levels,
+  `ref_ratio` 2 and 4, periodic/non-periodic/mixed, isotropic and anisotropic
+  cells, cubic and elongated domains.
+- **The surface is closed, has the right Euler characteristic, and is
+  consistently oriented** with normals toward increasing f. Enclosed volume by
+  the divergence theorem confirms outward, not merely consistent.
+- **Second-order convergence**: 3D areas at 32/64/128 give ratios 4.007 and
+  4.003; 2D lengths at 32/64/128/256 give 4.01, 4.00, 4.00.
+- **Carried components are exact**: a linear field comes back on the surface
+  equal to the vertex coordinate, to zero.
+- **Everything is rank-invariant byte-for-byte**, including the MEF file.
+
+### 14.3 The four negative controls
+
+Every one of them was added because the obvious check had already been shown
+to pass on a broken mesh. They are the most valuable thing in the tree.
+
+| control | what it breaks | what still passes |
+|---|---|---|
+| `diagonal_rule=0` | face-diagonal consistency | area -- and *better* than the correct rule |
+| `orient_elements=0` | element winding | area *and* closure, both identical |
+| `check_vertex_determinism` | element-dependent vertex data | everything, in serial |
+| improper nesting abort | stitch with no valid coarse parent | nothing -- it aborts |
+
+The recurring lesson: **area is not a topology test, and closure is not an
+orientation test.** Each is blind to the defect the next one catches.
+
+### 14.4 Every MPI defect found was instrumentation
+
+Five in a row -- rank-local face counts, rank-local vertex indices, a
+whitespace-split periodicity list, a renamed sed terminator, an unsorted
+element list -- plus one real one, the element-frame vertex position. The
+structure was right nearly every time; the things measuring it were not.
+Standing rule that came out of it: **anything entering a checksum is named by
+a gid or a tuple of gids, never by a position in an array**, and any ordering
+written to a file is canonicalised explicitly rather than inherited from
+traversal.
+
+### 14.5 Next
+
+- **`[DECIDE]` (§3), unchanged and still gating the sweep:** merge tree,
+  per-component Euler characteristic, or full Reeb graph with loop surgery.
+  The second is nearly free now -- the contour already computes chi globally
+  and orientation is settled, so it is per-component labelling on top of what
+  exists.
+- Run on a real plotfile. Everything so far is synthetic. Watch the nesting
+  assertion against hierarchies from actual regridding, and the cost of
+  `ownedBaseRegions` and the contour's `std::map` at production size.
+- `curvature.cpp` on tet-derived normals in the stitch band -- the sliver risk
+  of §7.1, now testable since orientation is consistent, but it needs real
+  geometry.
+- `.pvtu` output, to retire the gather-to-IOProc in `writeMEF`.
+- Wall extrapolation (§7.2), still deliberately deferred.
