@@ -988,3 +988,94 @@ onto an HDF5 dataset with per-box offsets if a single file is wanted.
 One gap to note against §7.2: wall boundary-layer nodes lie *outside* the domain
 and so have no cell in the hierarchy. They would need either a grown domain in the
 written file or separate storage. Deferred with the rest of the wall work.
+
+---
+
+## 12. Result of the gate (section 9.1(b))
+
+Answered, on branch `amr-complex`. **The construction is gap-free**, but not
+under the ownership rule §10.3.7 proposed, and the difference is the whole
+finding.
+
+### 12.1 The naive ownership rule loses the stitch layer
+
+"An element belongs to the box whose valid region contains its base cell" is
+wrong. The element bridging a coarse-fine interface on the **low** side has its
+base in a fine ghost stamped from the coarser level: no fine box holds it as
+valid, and the coarse box that would hold it has a `COVERED` corner and is
+rejected. Nobody generates it. Measured cost on a two-level 32^3 case:
+**1.93% of domain volume**, a gap one stitch-layer thick around every refined
+region — large enough to matter, small enough to be mistaken for something else
+if it had not been measured.
+
+The rule that works: base range is the valid box grown by one **on the low side**,
+with the lowest-indexed visiting box owning that shell, and periodic wrap images
+excluded so the low face is not counted twice. Still generated-once, still
+deterministic, still no communication.
+
+Getting this wrong was worth the cost of finding it: it is exactly the class of
+defect that produces a plausible-looking mesh and a quietly wrong answer.
+
+### 12.2 Verified
+
+15 combinations — 1, 2 and 3 levels; `ref_ratio` 2 and 4; fully periodic,
+non-periodic, and mixed — all with **relative volume error exactly zero**.
+
+Expected volume is the domain in periodic directions and the domain less one
+level-0 cell in non-periodic ones, since cell-centred data leaves the complex
+inset by `dx/2` at each wall (§7.2).
+
+Two incidental results worth keeping:
+
+- **Compensated summation is necessary, not fastidious.** Naive summation costs
+  ~5e-10 relative at 2e6 elements. A tolerance loose enough to absorb that would
+  hide a real gap of the same size, and the gate has to stay sharp as problems
+  grow. With Kahan summation the residual is exactly zero at every size tested.
+- **`ref_ratio` is unrestricted.** Ratio 4 verifies exactly as ratio 2 does,
+  confirming §4A's claim that degenerate-hex stitching needs no case table. The
+  `[DECIDE]` on requiring 2:1 stays retired.
+
+### 12.3 The shape histogram, i.e. the tet-subdivision case list
+
+Across every case, elements are only ever **hexes, prisms and pyramids**. No
+tets, and nothing unexpected. On the three-level 64^3 periodic case: 702656
+hexes, 23808 prisms, 13056 pyramids.
+
+So the Freudenthal subdivision of §7.1 has three cases to cover, not an open-
+ended family. That was the point of asking for the histogram rather than only
+the volume.
+
+### 12.4 Improper nesting is now an error, not a silent leak
+
+The first three-level attempt failed with a ~3% residual. Cause: the test
+generator produced a level that exactly covered its parent, so the next level's
+ghosts had only `COVERED` parents to stitch to and the interface had nothing to
+attach to.
+
+That was a defect in the generator, but it exposed a real robustness gap:
+nothing detected it. `classifyNodes()` now aborts at construction when a ghost
+stamped from level `lev-1` comes back `COVERED`, naming the levels involved.
+Prevent the bad state at creation rather than explaining the residual later.
+
+### 12.5 What was built
+
+- `Src/AMRComplex.H`, `Src/AMRComplex.cpp` — the complex.
+- `Src/amrComplexVerify.cpp` — driver running the gate.
+- `Src/makeTestPlt.cpp` — synthetic properly-nested hierarchies with an
+  analytic field (sphere SDF, so a later isosurface has a known area too).
+- `Src/GNUmakefile.AMRComplex` — standalone, AMReX-only. Deliberately
+  independent of `Make.Analysis` and therefore of PelePhysics, which is not
+  checked out in this tree and which `AMRComplex` does not need.
+
+### 12.6 Not yet done
+
+- **MPI is unmeasured.** No MPI in the environment used. The rank-independence
+  of the numbering (§10.5) and of the ownership rule (§12.1) is argued but not
+  demonstrated. First real test: identical element count, volume and histogram
+  at 1 and N ranks, and — since numbering is rank-independent by construction —
+  identical output files.
+- `ownsBaseCell` calls `BoxArray::intersections` per ghost base cell. Correct
+  and hash-backed, but it is the obvious hot spot; restrict it to the ghost
+  shell or precompute an ownership mask when it starts to matter.
+- Field values on nodes; tet subdivision; `.vtu`/`.pvtu` output; the plotfile
+  writer of §11.2.
