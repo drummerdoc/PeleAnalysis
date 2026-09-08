@@ -25,13 +25,27 @@ void mixIn (unsigned long long& h, unsigned long long v) noexcept
     h ^= (h >> 29);
 }
 
+constexpr long CHECKSUM_MOD = 2147483647L;   // 2^31 - 1
+
 AMREX_FORCE_INLINE
-unsigned long long edgeHash (long a, long b) noexcept
+long foldChecksum (unsigned long long h) noexcept
 {
-    if (a > b) { std::swap(a,b); }
+    return long(h % (unsigned long long)(CHECKSUM_MOD));
+}
+
+// Hash a triangle edge by the GLOBAL names of its two endpoints -- each a
+// node-edge (gid,gid) -- rather than by local vertex indices, which differ
+// from rank to rank and so make a shared edge look like two.
+AMREX_FORCE_INLINE
+unsigned long long edgeHash (std::pair<long,long> ka,
+                             std::pair<long,long> kb) noexcept
+{
+    if (kb < ka) { std::swap(ka,kb); }
     unsigned long long h = 1469598103934665603ULL;
-    mixIn(h, (unsigned long long)(a));
-    mixIn(h, (unsigned long long)(b));
+    mixIn(h, (unsigned long long)(ka.first));
+    mixIn(h, (unsigned long long)(ka.second));
+    mixIn(h, (unsigned long long)(kb.first));
+    mixIn(h, (unsigned long long)(kb.second));
     return h;
 }
 
@@ -136,6 +150,7 @@ long AMRContour::edgeVertex (long ga, long gb,
 
     const long idx = long(m_verts.size());
     m_verts.push_back(pw);
+    m_vertKey.push_back(key);
     m_vertCache[key] = idx;
     return idx;
 }
@@ -259,16 +274,30 @@ AMRContour::Report AMRContour::verify () const
     Long nv = Long(m_verts.size());
     Long nt = Long(m_tris.size());
 
-    std::map<std::pair<long,long>,int> edgeCount;
+    std::map<std::pair<long,long>,int> edgeCount;   // local indices; serial only
     unsigned long long par = 0ULL;
+    Long triSum = 0;
 
     for (const auto& t : m_tris) {
         for (int k = 0; k < 3; ++k) {
             long a = t.v[k], b = t.v[(k+1)%3];
             if (a > b) { std::swap(a,b); }
             ++edgeCount[std::make_pair(a,b)];
-            par ^= edgeHash(a,b);
+            // Parity over the global names, so an edge shared between two
+            // ranks cancels exactly as one shared within a rank does.
+            par ^= edgeHash(m_vertKey[t.v[k]], m_vertKey[t.v[(k+1)%3]]);
         }
+
+        std::pair<long,long> kk[3] = {m_vertKey[t.v[0]],
+                                      m_vertKey[t.v[1]],
+                                      m_vertKey[t.v[2]]};
+        std::sort(kk, kk+3);
+        unsigned long long th = 1469598103934665603ULL;
+        for (int k = 0; k < 3; ++k) {
+            mixIn(th, (unsigned long long)(kk[k].first));
+            mixIn(th, (unsigned long long)(kk[k].second));
+        }
+        triSum = (triSum + foldChecksum(th)) % CHECKSUM_MOD;
     }
 
     Long ne = Long(edgeCount.size());
@@ -282,6 +311,7 @@ AMRContour::Report AMRContour::verify () const
     ParallelDescriptor::ReduceLongSum(nv);
     ParallelDescriptor::ReduceLongSum(nt);
     ParallelDescriptor::ReduceLongSum(ne);
+    ParallelDescriptor::ReduceLongSum(triSum);
 #ifdef AMREX_USE_MPI
     if (ParallelDescriptor::NProcs() > 1) {
         unsigned long long tmp = par;
@@ -295,7 +325,8 @@ AMRContour::Report AMRContour::verify () const
     r.nTriangles = nt;
     r.nEdges     = ne;
     r.eulerChar  = nv - ne + nt;
-    r.edgeParity = par;
+    r.edgeParity  = par;
+    r.triChecksum = triSum % CHECKSUM_MOD;
     return r;
 }
 
@@ -303,9 +334,11 @@ void AMRContour::reportVerify (const Report& r) const
 {
     Print() << "\n=== AMRContour verify ===\n";
     Print() << "  isoValue       : " << m_isoVal << "\n";
-    Print() << "  vertices       : " << r.nVertices << "\n";
+    Print() << "~ vertices       : " << r.nVertices
+            << "  (rank-local: shared vertices counted once per rank)\n";
     Print() << "  triangles      : " << r.nTriangles << "\n";
     Print() << "~ area           : " << r.area << "\n";
+    Print() << "  checksum tris  : " << r.triChecksum << "\n";
     Print() << "  checksum edges : " << r.edgeParity << "\n";
     Print() << "  closed surface : " << (r.closed() ? "yes" : "NO")
             << "  (every edge shared by exactly two triangles)\n";

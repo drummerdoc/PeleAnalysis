@@ -44,7 +44,12 @@ public:
     {
         amrex::Real area = 0;
 
+        // RANK-LOCAL: a surface vertex on a node-edge shared between two
+        // ranks is created independently on each, so this over-counts under
+        // MPI. Exact at one rank. Triangles are not affected -- each belongs
+        // to exactly one element, which belongs to exactly one rank.
         long nVertices  = 0;
+
         long nTriangles = 0;
         long nEdges     = 0;
         long eulerChar  = 0;     // V - E + F
@@ -64,6 +69,11 @@ public:
         // tet subdivision. The volume gate in AMRComplex cannot: tets of a
         // hexahedron sum to its volume whichever diagonals they use.
         unsigned long long edgeParity = 0;
+
+        // Modular sum over triangles of a hash of their three vertex KEYS.
+        // Additive and order-independent, and rank-independent because each
+        // triangle is produced exactly once and the keys are global.
+        long triChecksum = 0;
 
         bool closed () const noexcept { return edgeParity == 0; }
         bool manifold () const noexcept { return edgesBad == 0; }
@@ -105,6 +115,13 @@ private:
 
     std::map<std::pair<long,long>, long> m_vertCache;  // edge (gid,gid) -> vertex
     amrex::Vector<amrex::RealVect>       m_verts;      // canonical, wrapped
+
+    // The GLOBAL name of each surface vertex: the node-edge it lies on. The
+    // index into m_verts is rank-local and means nothing to another rank, so
+    // every checksum and every incidence test must be phrased in these, not
+    // in indices. Getting that wrong is what made the first MPI run report an
+    // open surface on a closed one.
+    amrex::Vector<std::pair<long,long>>  m_vertKey;
     amrex::Vector<Triangle>              m_tris;
     amrex::Real                          m_area = 0;   // summed in element frames
 };
