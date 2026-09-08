@@ -141,10 +141,23 @@ public:
         // decomposition, so a mesh with T-junctions at coarse-fine interfaces
         // closes exactly while still failing to share faces. Marching tets
         // needs face-conformity, so it has to be measured separately.
+        // NOTE these four are RANK-LOCAL. Each rank sees only its own
+        // elements, so a face shared across a rank boundary is counted once
+        // on each side and looks like two boundary faces. They are exact in
+        // serial and useful for debugging; they are not an MPI invariant and
+        // must not be compared across rank counts.
         long facesInterior = 0;   // incidence 2 -- correct
         long facesBoundary = 0;   // incidence 1 -- domain wall, expected
         long facesBad      = 0;   // incidence >2 -- non-manifold
         long facesDegenerate = 0; // collapsed to a point or an edge
+
+        // The rank-independent face invariant: XOR of a hash of every face
+        // instance over the whole complex. A face shared by two elements
+        // contributes its hash twice and cancels, wherever those elements
+        // live, so on a closed complex -- every direction periodic -- this is
+        // exactly zero. With walls it is the XOR of the boundary faces alone:
+        // nonzero, but still the same value at any rank count.
+        unsigned long long faceParity = 0;
 
         // VALID nodes still carrying the fill sentinel: the value plumbing
         // has a hole the identity plumbing does not. Must be zero.
@@ -164,6 +177,7 @@ public:
         bool passed (amrex::Real tol = 1.0e-12) const noexcept
             { return std::abs(relError) < tol; }
         bool faceConforming () const noexcept { return facesBad == 0; }
+        bool faceClosed () const noexcept { return faceParity == 0; }
         bool fieldsFilled () const noexcept { return nodesUnfilled == 0; }
     };
 

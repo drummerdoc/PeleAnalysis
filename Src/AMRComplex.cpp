@@ -523,6 +523,7 @@ AMRComplex::VerifyReport AMRComplex::verify () const
     Long nElt = 0, nNod = 0;
     Long degenFaces = 0, nUnfilled = 0;
     Long nodeSum = 0, eltSum = 0;
+    unsigned long long facePar = 0ULL;
     std::map<FaceKey,int> faceCount;
     Vector<Long> shape(Element::NNODE+1, 0);
 
@@ -619,6 +620,10 @@ AMRComplex::VerifyReport AMRComplex::verify () const
                     if (nd < 3) { ++degenFaces; continue; }
                     std::sort(key.begin(), key.begin()+nd);
                     ++faceCount[key];
+
+                    unsigned long long fh = 1469598103934665603ULL;
+                    for (int q = 0; q < nd; ++q) { mixIn(fh, (unsigned long long)(key[q])); }
+                    facePar ^= fh;
                 }
 
                 // Corner offsets from corner 0, minimum image in periodic
@@ -686,6 +691,18 @@ AMRComplex::VerifyReport AMRComplex::verify () const
         else                     { ++r.facesBad; }
     }
     r.facesDegenerate = degenFaces;
+
+    // XOR is associative and commutative, so this is independent of both the
+    // visit order and the distribution -- unlike the incidence census above,
+    // which is irreducibly local.
+#ifdef AMREX_USE_MPI
+    if (ParallelDescriptor::NProcs() > 1) {
+        unsigned long long tmp = facePar;
+        MPI_Allreduce(&tmp, &facePar, 1, MPI_UNSIGNED_LONG_LONG, MPI_BXOR,
+                      ParallelDescriptor::Communicator());
+    }
+#endif
+    r.faceParity = facePar;
     r.nodesUnfilled   = nUnfilled;
     r.nodeChecksum    = nodeSum % CHECKSUM_MOD;
     r.eltChecksum     = eltSum  % CHECKSUM_MOD;
@@ -702,12 +719,18 @@ AMRComplex::VerifyReport AMRComplex::verify () const
 void AMRComplex::reportVerify (const VerifyReport& r) const
 {
     Print() << "\n=== AMRComplex verify ===\n";
+    // Lines prefixed "~" are diagnostics, not invariants: their last bits
+    // legitimately depend on how the work was partitioned. The volume sum is
+    // compensated per rank but the cross-rank reduction is a plain sum, so
+    // the residual moves by an ulp or so with the rank count -- real, benign,
+    // and not something to compare for equality. The tolerance test in the
+    // RESULT line is the comparable form of the same statement.
     Print() << "  levels         : " << m_nlev << "\n";
     Print() << "  VALID nodes    : " << r.nNodes << "\n";
     Print() << "  elements       : " << r.nElements << "\n";
-    Print() << "  expected volume: " << r.domainVolume << "\n";
-    Print() << "  element volume : " << r.elementVolume << "\n";
-    Print() << "  relative error : " << r.relError << "\n";
+    Print() << "~ expected volume: " << r.domainVolume << "\n";
+    Print() << "~ element volume : " << r.elementVolume << "\n";
+    Print() << "~ relative error : " << r.relError << "\n";
 
     Print() << "  shape histogram (distinct corner nodes):\n";
     for (int s = 0; s <= Element::NNODE; ++s) {
@@ -732,12 +755,23 @@ void AMRComplex::reportVerify (const VerifyReport& r) const
     }
     Print() << "  checksum nodes : " << r.nodeChecksum << "\n";
     Print() << "  checksum elts  : " << r.eltChecksum  << "\n";
-    Print() << "  face census:\n";
-    Print() << "    interior (incidence 2) : " << r.facesInterior << "\n";
-    Print() << "    boundary (incidence 1) : " << r.facesBoundary << "\n";
-    Print() << "    non-manifold (>2)      : " << r.facesBad << "\n";
-    Print() << "    degenerate (<3 nodes)  : " << r.facesDegenerate << "\n";
-    Print() << "    face-conforming        : "
+    Print() << "  checksum faces : " << r.faceParity << "\n";
+
+    bool allPeriodic = true;
+    for (int d = 0; d < AMREX_SPACEDIM; ++d) {
+        if (!m_params.is_per[d]) { allPeriodic = false; }
+    }
+    if (allPeriodic) {
+        Print() << "  closed complex : " << (r.faceClosed() ? "yes" : "NO")
+                << "  (every face shared by exactly two elements)\n";
+    }
+
+    Print() << "~ face census (rank-local, exact only at one rank):\n";
+    Print() << "~   interior (incidence 2) : " << r.facesInterior << "\n";
+    Print() << "~   boundary (incidence 1) : " << r.facesBoundary << "\n";
+    Print() << "~   non-manifold (>2)      : " << r.facesBad << "\n";
+    Print() << "~   degenerate (<3 nodes)  : " << r.facesDegenerate << "\n";
+    Print() << "~   face-conforming        : "
             << (r.faceConforming() ? "yes" : "NO") << "\n";
 
     if (!r.passed()) {

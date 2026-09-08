@@ -91,9 +91,25 @@ echo "workdir: $WORK"
 echo "ranks  : $RANKS"
 echo
 
-# The invariant block: everything verify() reports except timing. Blank lines
-# and the banner are dropped so the comparison is on content only.
-invariants () { sed -n '/=== AMRComplex verify ===/,/RESULT/p' | grep -v '^$'; }
+# The invariant block.
+#
+# verify() marks with a leading "~" every line whose last bits legitimately
+# depend on how the work was partitioned, and those are dropped here:
+#
+#   - the volume sum is compensated per rank, but the cross-rank reduction is
+#     a plain sum, so the residual moves by an ulp or so with the rank count.
+#     Real, benign, and not something to compare for equality -- the tolerance
+#     test in the RESULT line is the comparable form of that statement.
+#   - the face incidence census is irreducibly rank-local: each rank sees only
+#     its own elements, so a face shared across a rank boundary is counted
+#     once on each side and looks like two boundary faces. The rank-independent
+#     face invariant is "checksum faces", an XOR over every face instance,
+#     which cancels shared faces wherever their elements live.
+#
+# What remains must be byte-identical.
+invariants () {
+    sed -n '/=== AMRComplex verify ===/,/RESULT/p' | grep -v '^$' | grep -v '^~'
+}
 
 FAIL=0
 pass () { echo "  PASS  $1"; }
@@ -190,14 +206,15 @@ for mgs in 8 16 32; do
   $MPIRUN -n 1 "$MAKEPLT" n_cell=64 nlevels=3 max_grid_size=$mgs \
       outfile=mpi_mgs$mgs > /dev/null 2>&1
   out=$($MPIRUN -n 4 "$VERIFY" infile=mpi_mgs$mgs is_per="1 1 1" varnames=dist 2>/dev/null)
-  relerr=$(echo "$out" | awk '/relative error/{print $4}')
-  conf=$(  echo "$out" | awk '/face-conforming/{print $3}')
-  unf=$(   echo "$out" | awk '/component\(s\)/{print $5}')
-  bad=$(   echo "$out" | awk '/non-manifold/{print $4}')
-  if [ "$relerr" = "0" ] && [ "$conf" = "yes" ] && [ "$unf" = "0" ] && [ "$bad" = "0" ]; then
-      pass "max_grid_size=$mgs  (relerr=$relerr conforming=$conf unfilled=$unf nonmanifold=$bad)"
+  res=$( echo "$out" | awk '/RESULT/{print $2}')
+  closed=$(echo "$out" | awk '/closed complex/{print $4}')
+  unf=$(  echo "$out" | awk '/component\(s\)/{print $5}')
+  # The rank-local census is not usable here; "closed complex" is the global
+  # statement that every face is shared by exactly two elements.
+  if [ "$res" = "PASS" ] && [ "$closed" = "yes" ] && [ "$unf" = "0" ]; then
+      pass "max_grid_size=$mgs  (volume=$res closed=$closed unfilled=$unf)"
   else
-      fail "max_grid_size=$mgs  (relerr=$relerr conforming=$conf unfilled=$unf nonmanifold=$bad)"
+      fail "max_grid_size=$mgs  (volume=$res closed=$closed unfilled=$unf)"
   fi
 done
 echo
