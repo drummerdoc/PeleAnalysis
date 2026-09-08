@@ -52,12 +52,13 @@ void AMRSegment::localUnionFind ()
     // element touches -- is still a component with a volume, rather than
     // silently absent from the tally.
     std::set<long> owned;
-    m_cx.forEachNode([&] (const Node& n, const Real* vals, Real, bool)
+    m_cx.forEachNode([&] (const Node& n, const Real* vals, Real, bool maybeShared)
     {
         owned.insert(n.gid);
         if (inSet(vals[ic])) {
             m_parent[n.gid] = n.gid;
             m_lev[n.gid] = n.level;
+            if (maybeShared) { m_shared.insert(n.gid); }
         }
     });
 
@@ -69,7 +70,10 @@ void AMRSegment::localUnionFind ()
         for (int c = 0; c < Element::NNODE; ++c) {
             if (!inSet(vals[std::size_t(c)*std::size_t(nc)+std::size_t(ic)])) { continue; }
             const long g = cn[c].gid;
-            if (m_parent.find(g) == m_parent.end()) { m_parent[g] = g; }  // a ghost
+            if (m_parent.find(g) == m_parent.end()) {
+                m_parent[g] = g;        // a ghost: owned by another rank
+                m_shared.insert(g);
+            }
             if (first < 0) { first = c; } else { unite(cn[first].gid, g); }
         }
     });
@@ -83,9 +87,12 @@ void AMRSegment::mergeAcrossRanks ()
     // Two ranks emitting different roots for the same gid is exactly the
     // information needed to join their components; the gid itself is the
     // shared name, which is why identity had to be global from the start.
+    // Only the nodes that can possibly be seen by another rank. An interior
+    // node is known to exactly one rank, so publishing it tells nobody
+    // anything -- and publishing all of them makes this O(N) all-to-all
+    // instead of O(decomposition surface).
     Vector<Long> pairs;
-    for (auto& kv : m_parent) {
-        const long g = kv.first;
+    for (const long g : m_shared) {
         pairs.push_back(Long(g));
         pairs.push_back(Long(findRoot(g)));
     }

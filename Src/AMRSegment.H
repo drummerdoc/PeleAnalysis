@@ -77,6 +77,10 @@ private:
     std::unordered_map<long,int> m_lev;
     std::set<long>                       m_ownedSet;
 
+    // Nodes another rank might also see: ghosts here, and owned nodes on a
+    // box boundary or beside a COVERED cell. Only these are exchanged.
+    std::set<long>                       m_shared;
+
     amrex::Vector<Component> m_comps;
 
     long findRoot (long g);

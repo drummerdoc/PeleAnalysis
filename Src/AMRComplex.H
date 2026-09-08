@@ -235,10 +235,14 @@ public:
     // uncovered cells partition the domain -- so summing them over a set of
     // nodes gives that region's volume with no quadrature.
     //
-    // func(const Node& n, const Real* values, Real cellVolume, bool onBoxEdge)
-    //   onBoxEdge marks a node within one cell of its box boundary, i.e. one
-    //   that may appear as a ghost on another rank. A distributed union-find
-    //   needs exactly those and no others.
+    // func(const Node& n, const Real* values, Real cellVolume, bool maybeShared)
+    //   maybeShared marks a node that may appear as a ghost on another rank:
+    //   within one cell of its own box boundary, or adjacent to a COVERED
+    //   cell and therefore liable to be stamped as a coarse parent into some
+    //   finer box's ghost region. A distributed union-find needs to exchange
+    //   exactly these and no others -- exchanging every node instead is O(N)
+    //   all-to-all, which is the difference between a tool that scales and
+    //   one that does not.
     template <class F>
     void forEachNode (F&& func) const
     {
@@ -260,7 +264,19 @@ public:
                     const amrex::IntVect iv(AMREX_D_DECL(i,j,k));
                     amrex::Real vals[16];
                     for (int c = 0; c < m_ncomp && c < 16; ++c) { vals[c] = fv(i,j,k,c); }
-                    func(n, vals, cvol, !inner.contains(iv));
+
+                    bool shared = !inner.contains(iv);
+                    if (!shared) {
+                        for (int kk = -1; kk <= 1 && !shared; ++kk) {
+                        for (int jj = -1; jj <= 1 && !shared; ++jj) {
+                        for (int ii = -1; ii <= 1 && !shared; ++ii) {
+#if (AMREX_SPACEDIM == 2)
+                            if (kk != 0) { continue; }
+#endif
+                            if (a(i+ii,j+jj,k+kk).type == Node::COVERED) { shared = true; }
+                        }}}
+                    }
+                    func(n, vals, cvol, shared);
                 });
             }
         }
