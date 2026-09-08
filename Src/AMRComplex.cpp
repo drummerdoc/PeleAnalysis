@@ -7,6 +7,7 @@
 #include <map>
 #include <array>
 #include <algorithm>
+#include <cstring>
 #include <vector>
 
 using namespace amrex;
@@ -19,6 +20,24 @@ namespace {
 // still carrying it means the value plumbing has a hole the identity
 // plumbing does not, which is exactly the drift this design guards against.
 constexpr Real FIELD_SENTINEL = 1.0e30;
+
+// A 64-bit mix reduced into a Mersenne prime, so that a plain sum over items
+// is order-independent and cannot overflow for any realistic item count.
+constexpr long CHECKSUM_MOD = 2147483647L;   // 2^31 - 1
+
+AMREX_FORCE_INLINE
+void mixIn (unsigned long long& h, unsigned long long v) noexcept
+{
+    h ^= v;
+    h *= 1099511628211ULL;          // FNV-1a prime
+    h ^= (h >> 29);
+}
+
+AMREX_FORCE_INLINE
+long foldChecksum (unsigned long long h) noexcept
+{
+    return long(h % (unsigned long long)(CHECKSUM_MOD));
+}
 
 // Lexicographic index of iv within bx, k-j-i order. A pure function of
 // (iv,bx), so every rank agrees without communicating.
@@ -503,6 +522,7 @@ AMRComplex::VerifyReport AMRComplex::verify () const
     Real volSum = 0.0, volComp = 0.0;
     Long nElt = 0, nNod = 0;
     Long degenFaces = 0, nUnfilled = 0;
+    Long nodeSum = 0, eltSum = 0;
     std::map<FaceKey,int> faceCount;
     Vector<Long> shape(Element::NNODE+1, 0);
 
@@ -521,6 +541,24 @@ AMRComplex::VerifyReport AMRComplex::verify () const
                 for (int n = 0; n < nc; ++n) {
                     if (fv(i,j,k,n) >= FIELD_SENTINEL) { ++nUnfilled; break; }
                 }
+
+                // Node hash: identity, global id, and the exact bits of every
+                // propagated field value. A rank-dependent difference in the
+                // field plumbing shows up here and nowhere else.
+                const Node& nd = a(i,j,k);
+                unsigned long long h = 1469598103934665603ULL;
+                mixIn(h, (unsigned long long)(nd.level));
+                AMREX_D_TERM(mixIn(h, (unsigned long long)(nd.iv[0]));,
+                             mixIn(h, (unsigned long long)(nd.iv[1]));,
+                             mixIn(h, (unsigned long long)(nd.iv[2])););
+                mixIn(h, (unsigned long long)(nd.gid));
+                for (int n = 0; n < nc; ++n) {
+                    unsigned long long bits;
+                    const double dv = double(fv(i,j,k,n));
+                    std::memcpy(&bits, &dv, sizeof(bits));
+                    mixIn(h, bits);
+                }
+                nodeSum = (nodeSum + foldChecksum(h)) % CHECKSUM_MOD;
             });
 
             const BoxList owned = ownedBaseRegions(lev, mfi.index());
@@ -551,6 +589,19 @@ AMRComplex::VerifyReport AMRComplex::verify () const
                     if (!seen) { ++distinct; }
                 }
                 ++shape[distinct];
+
+                // Element hash over the sorted corner gids, so the same cell
+                // hashes identically however it was reached.
+                {
+                    long g[Element::NNODE];
+                    for (int c = 0; c < Element::NNODE; ++c) { g[c] = cn[c].gid; }
+                    std::sort(g, g + Element::NNODE);
+                    unsigned long long h = 1469598103934665603ULL;
+                    for (int c = 0; c < Element::NNODE; ++c) {
+                        mixIn(h, (unsigned long long)(g[c]));
+                    }
+                    eltSum = (eltSum + foldChecksum(h)) % CHECKSUM_MOD;
+                }
 
                 // Faces of this element, each reduced to its set of distinct
                 // gids. A face shared by two cells must present the same set
@@ -625,6 +676,8 @@ AMRComplex::VerifyReport AMRComplex::verify () const
     ParallelDescriptor::ReduceLongSum(nElt);
     ParallelDescriptor::ReduceLongSum(nNod);
     ParallelDescriptor::ReduceLongSum(nUnfilled);
+    ParallelDescriptor::ReduceLongSum(nodeSum);
+    ParallelDescriptor::ReduceLongSum(eltSum);
     ParallelDescriptor::ReduceLongSum(shape.dataPtr(), shape.size());
 
     for (const auto& fc : faceCount) {
@@ -634,6 +687,8 @@ AMRComplex::VerifyReport AMRComplex::verify () const
     }
     r.facesDegenerate = degenFaces;
     r.nodesUnfilled   = nUnfilled;
+    r.nodeChecksum    = nodeSum % CHECKSUM_MOD;
+    r.eltChecksum     = eltSum  % CHECKSUM_MOD;
 
     r.elementVolume = volSum;
     r.relError      = (dvol > 0 ? (volSum - dvol)/dvol : Real(0.0));
@@ -675,6 +730,8 @@ void AMRComplex::reportVerify (const VerifyReport& r) const
                 << r.nodesUnfilled << " VALID node(s) unfilled"
                 << (r.fieldsFilled() ? " (ok)" : "  <-- PROBLEM") << "\n";
     }
+    Print() << "  checksum nodes : " << r.nodeChecksum << "\n";
+    Print() << "  checksum elts  : " << r.eltChecksum  << "\n";
     Print() << "  face census:\n";
     Print() << "    interior (incidence 2) : " << r.facesInterior << "\n";
     Print() << "    boundary (incidence 1) : " << r.facesBoundary << "\n";

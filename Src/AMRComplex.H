@@ -150,6 +150,17 @@ public:
         // has a hole the identity plumbing does not. Must be zero.
         long nodesUnfilled = 0;
 
+        // Order-independent checksums over the node set and the element set.
+        //
+        // Matching element *counts* across rank counts is weak evidence: two
+        // different meshes can have the same count. These are sums of per-item
+        // hashes, so they are independent of the order items are visited in
+        // and of which rank holds what, but sensitive to any difference in
+        // membership, connectivity, or -- for nodes -- the exact bits of the
+        // propagated field values. They are the actual MPI invariant.
+        long nodeChecksum = 0;
+        long eltChecksum  = 0;
+
         bool passed (amrex::Real tol = 1.0e-12) const noexcept
             { return std::abs(relError) < tol; }
         bool faceConforming () const noexcept { return facesBad == 0; }
