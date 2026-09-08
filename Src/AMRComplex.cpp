@@ -15,6 +15,11 @@ namespace amrcomplex {
 
 namespace {
 
+// Marks field data that no fill or propagation has touched. A VALID node
+// still carrying it means the value plumbing has a hole the identity
+// plumbing does not, which is exactly the drift this design guards against.
+constexpr Real FIELD_SENTINEL = 1.0e30;
+
 // Lexicographic index of iv within bx, k-j-i order. A pure function of
 // (iv,bx), so every rank agrees without communicating.
 AMREX_FORCE_INLINE
@@ -87,6 +92,8 @@ AMRComplex::AMRComplex (const Params& params)
     m_dmap.resize(m_nlev);
     m_geom.resize(m_nlev);
     m_nodes.resize(m_nlev);
+    m_ncomp = int(m_params.varnames.size());
+    m_field.resize(m_nlev);
     if (m_nlev > 1) { m_refRatio.resize(m_nlev-1); }
 
     RealBox rb(pf.probLo().data(), pf.probHi().data());
@@ -104,7 +111,7 @@ AMRComplex::AMRComplex (const Params& params)
     }
 
     numberNodes();    // pure BoxArray bookkeeping; must precede the fill
-    classifyNodes();
+    classifyNodes(pf);
     buildElements();
 }
 
@@ -141,11 +148,23 @@ void AMRComplex::numberNodes ()
     }
 }
 
-void AMRComplex::classifyNodes ()
+void AMRComplex::classifyNodes (PlotFileData& pf)
 {
     for (int lev = 0; lev < m_nlev; ++lev) {
 
         m_nodes[lev].define(m_grids[lev], m_dmap[lev], 1, 1);
+
+        // Field values live alongside the identity, on the same grids with the
+        // same ghost width, and are propagated by the same calls. The sentinel
+        // makes an unpropagated value detectable rather than plausible.
+        if (m_ncomp > 0) {
+            m_field[lev].define(m_grids[lev], m_dmap[lev], m_ncomp, 1);
+            m_field[lev].setVal(FIELD_SENTINEL);
+            for (int n = 0; n < m_ncomp; ++n) {
+                const MultiFab src = pf.get(lev, m_params.varnames[n]);
+                m_field[lev].ParallelCopy(src, 0, n, 1);
+            }
+        }
 
         // Everything, ghosts included, starts INIT naming its own cell. A
         // ghost still INIT after both propagation steps lies outside the
@@ -198,6 +217,7 @@ void AMRComplex::classifyNodes ()
         // That copy *is* the periodic identification: no arithmetic, and no
         // opportunity for the coordinate-based defect this design removes.
         m_nodes[lev].FillBoundary(m_geom[lev].periodicity());
+        if (m_ncomp > 0) { m_field[lev].FillBoundary(m_geom[lev].periodicity()); }
 
         // Whatever ghosts remain are covered by the coarser level, if any.
         if (lev > 0) { stampCoarseParents(lev); }
@@ -255,6 +275,13 @@ void AMRComplex::stampCoarseParents (int lev)
     cgba.grow(1);
 
     FabArray<BaseFab<Node>> cnodes(cgba, m_dmap[lev], 1, 0);
+    MultiFab cfield;
+    if (m_ncomp > 0) {
+        cfield.define(cgba, m_dmap[lev], m_ncomp, 0);
+        cfield.setVal(FIELD_SENTINEL);
+        cfield.ParallelCopy(m_field[lev-1], 0, 0, m_ncomp, IntVect(0), IntVect(0),
+                            m_geom[lev-1].periodicity());
+    }
 
     for (MFIter mfi(cnodes); mfi.isValid(); ++mfi) {
         const Box& bx = mfi.validbox();
@@ -268,15 +295,24 @@ void AMRComplex::stampCoarseParents (int lev)
     cnodes.ParallelCopy(m_nodes[lev-1], 0, 0, 1, IntVect(0), IntVect(0),
                         m_geom[lev-1].periodicity());
 
+    // Identity and value are stamped in the same pass, under the same test.
+    // Two separate loops would be two chances for a stitch node's value and
+    // its identity to disagree, and nothing downstream would notice.
     for (MFIter mfi(m_nodes[lev]); mfi.isValid(); ++mfi) {
         const Box& gbx = mfi.fabbox();
         auto const& f  = m_nodes[lev].array(mfi);
         auto const& c  = cnodes.const_array(mfi);
+        const int nc   = m_ncomp;
+        Array4<Real> ff, cf;
+        if (nc > 0) { ff = m_field[lev].array(mfi); cf = cfield.array(mfi); }
         AMREX_LOOP_3D(gbx, i, j, k,
         {
             if (f(i,j,k).type == Node::INIT) {
                 const IntVect civ = amrex::coarsen(IntVect(AMREX_D_DECL(i,j,k)), rr);
                 f(i,j,k) = c(civ);
+                for (int n = 0; n < nc; ++n) {
+                    ff(i,j,k,n) = cf(civ[0],civ[1],civ[2],n);
+                }
             }
         });
     }
@@ -466,7 +502,7 @@ AMRComplex::VerifyReport AMRComplex::verify () const
     // problem grows.
     Real volSum = 0.0, volComp = 0.0;
     Long nElt = 0, nNod = 0;
-    Long degenFaces = 0;
+    Long degenFaces = 0, nUnfilled = 0;
     std::map<FaceKey,int> faceCount;
     Vector<Long> shape(Element::NNODE+1, 0);
 
@@ -475,9 +511,16 @@ AMRComplex::VerifyReport AMRComplex::verify () const
             const Box& vbx = mfi.validbox();
             auto const& a  = m_nodes[lev].const_array(mfi);
 
+            const int nc = m_ncomp;
+            Array4<const Real> fv;
+            if (nc > 0) { fv = m_field[lev].const_array(mfi); }
             AMREX_LOOP_3D(vbx, i, j, k,
             {
-                if (a(i,j,k).type == Node::VALID) { ++nNod; }
+                if (a(i,j,k).type != Node::VALID) { continue; }
+                ++nNod;
+                for (int n = 0; n < nc; ++n) {
+                    if (fv(i,j,k,n) >= FIELD_SENTINEL) { ++nUnfilled; break; }
+                }
             });
 
             const BoxList owned = ownedBaseRegions(lev, mfi.index());
@@ -581,6 +624,7 @@ AMRComplex::VerifyReport AMRComplex::verify () const
     ParallelDescriptor::ReduceRealSum(volSum);
     ParallelDescriptor::ReduceLongSum(nElt);
     ParallelDescriptor::ReduceLongSum(nNod);
+    ParallelDescriptor::ReduceLongSum(nUnfilled);
     ParallelDescriptor::ReduceLongSum(shape.dataPtr(), shape.size());
 
     for (const auto& fc : faceCount) {
@@ -589,6 +633,7 @@ AMRComplex::VerifyReport AMRComplex::verify () const
         else                     { ++r.facesBad; }
     }
     r.facesDegenerate = degenFaces;
+    r.nodesUnfilled   = nUnfilled;
 
     r.elementVolume = volSum;
     r.relError      = (dvol > 0 ? (volSum - dvol)/dvol : Real(0.0));
@@ -625,6 +670,11 @@ void AMRComplex::reportVerify (const VerifyReport& r) const
         Print() << "    " << s << nm << " : " << r.shape[s] << "\n";
     }
 
+    if (m_ncomp > 0) {
+        Print() << "  fields         : " << m_ncomp << " component(s), "
+                << r.nodesUnfilled << " VALID node(s) unfilled"
+                << (r.fieldsFilled() ? " (ok)" : "  <-- PROBLEM") << "\n";
+    }
     Print() << "  face census:\n";
     Print() << "    interior (incidence 2) : " << r.facesInterior << "\n";
     Print() << "    boundary (incidence 1) : " << r.facesBoundary << "\n";

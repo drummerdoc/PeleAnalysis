@@ -112,6 +112,7 @@ public:
     struct Params
     {
         std::string                        infile;
+        amrex::Vector<std::string>         varnames;           // empty => none
         int                                finestLevel = -1;   // -1 => all
         amrex::Array<int,AMREX_SPACEDIM>   is_per      = {{AMREX_D_DECL(0,0,0)}};
         int                                verbose     = 0;
@@ -145,16 +146,21 @@ public:
         long facesBad      = 0;   // incidence >2 -- non-manifold
         long facesDegenerate = 0; // collapsed to a point or an edge
 
+        // VALID nodes still carrying the fill sentinel: the value plumbing
+        // has a hole the identity plumbing does not. Must be zero.
+        long nodesUnfilled = 0;
+
         bool passed (amrex::Real tol = 1.0e-12) const noexcept
             { return std::abs(relError) < tol; }
         bool faceConforming () const noexcept { return facesBad == 0; }
+        bool fieldsFilled () const noexcept { return nodesUnfilled == 0; }
     };
 
     explicit AMRComplex (const Params& params);
 
     // Build stages, in the order they must run. The constructor calls all
     // three; they are public so each can be exercised on its own in tests.
-    void classifyNodes ();   // VALID/COVERED, periodic identification, coarse stamping
+    void classifyNodes (amrex::PlotFileData& pf);  // VALID/COVERED, periodic id, coarse stamping, field fill
     void numberNodes ();     // BoxArray-index numbering; rank-count independent
     void buildElements ();   // base cell restricted to the valid box
 
@@ -162,6 +168,11 @@ public:
     void reportVerify (const VerifyReport& r) const;
 
     int nLevels () const noexcept { return m_nlev; }
+    int nComp () const noexcept { return m_ncomp; }
+
+    // Field values carried on the nodes, with one ghost, propagated by
+    // exactly the same route as the node identity -- see stampCoarseParents.
+    const amrex::MultiFab& field (int lev) const noexcept { return m_field[lev]; }
     long nNodesGlobal () const noexcept { return m_nNodesGlobal; }
     const amrex::Vector<Element>& elements () const noexcept { return m_elements; }
     const amrex::Geometry& geom (int lev) const noexcept { return m_geom[lev]; }
@@ -194,6 +205,8 @@ private:
     amrex::Vector<amrex::IntVect>             m_refRatio;   // size nlev-1
 
     amrex::Vector<amrex::FabArray<amrex::BaseFab<Node>>> m_nodes;
+    amrex::Vector<amrex::MultiFab>                       m_field;
+    int                                                  m_ncomp = 0;
 
     // levelOffset[lev] + boxOffset[lev][i] + local index = gid
     amrex::Vector<long>                       m_levelOffset;
