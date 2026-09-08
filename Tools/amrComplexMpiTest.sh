@@ -36,6 +36,7 @@
 #   make -f GNUmakefile.AMRComplex USE_MPI=TRUE COMP=llvm -j8
 #   make -f GNUmakefile.AMRComplex USE_MPI=TRUE COMP=llvm EBASE=makeTestPlt -j8
 #   make -f GNUmakefile.AMRComplex USE_MPI=TRUE COMP=llvm EBASE=amrContourVerify -j8
+#   make -f GNUmakefile.AMRComplex USE_MPI=TRUE COMP=llvm EBASE=amrSweep -j8
 #
 # Then, from any writable directory:
 #
@@ -80,6 +81,7 @@ DTAG="${DIM}d"
 shopt -s nullglob
 VERIFY=("$SRC"/amrComplexVerify${DTAG}.*MPI.ex)
 CONTOUR=("$SRC"/amrContourVerify${DTAG}.*MPI.ex)
+SWEEP=("$SRC"/amrSweep${DTAG}.*MPI.ex)
 MAKEPLT=("$SRC"/makeTestPlt${DTAG}.*MPI.ex)
 shopt -u nullglob
 
@@ -91,6 +93,7 @@ fi
 VERIFY=${VERIFY[0]}
 MAKEPLT=${MAKEPLT[0]}
 CONTOUR=${CONTOUR[0]:-}
+SWEEP=${SWEEP[0]:-}
 
 WORK=${WORK:-$(pwd)/amrComplex_mpi_test}
 mkdir -p "$WORK" && cd "$WORK" || exit 1
@@ -270,6 +273,48 @@ done
 echo
 else
 echo "=== 4. contour invariance: SKIPPED (no MPI amrContourVerify built) ==="
+echo
+fi
+
+# --------------------------------------------------------------------------
+# 5. The threshold sweep.
+#
+# The scientific output, so the bar is the same as everywhere else: identical,
+# not close. Component counts are integers, and component volumes are formed
+# from integer counts per level times that level's cell volume, so they are an
+# exact function of integers rather than a sum of reals in partition order.
+# Nothing here has any business changing with the rank count.
+#
+# Run with area=0: surface area is a genuine floating-point sum and is already
+# covered, in its own terms, by section 4.
+# --------------------------------------------------------------------------
+if [ -n "$SWEEP" ]; then
+echo "=== 5. sweep invariance =============================================="
+sinv () { grep -E '^ ' | grep -v '^#'; }
+for c in $CASES; do
+  for fld in cells dist; do
+    if [ "$fld" = "cells" ]; then LO=2.5; HI=-1.0; else LO=-0.2; HI=0.15; fi
+    $MPIRUN -n 1 "$SWEEP" infile=$c isoCompName=$fld is_per="$ALLPER" \
+        vlo=$LO vhi=$HI nval=12 area=0 2>/dev/null | sinv > "sw_${c}_${fld}_ref.txt"
+    if [ ! -s "sw_${c}_${fld}_ref.txt" ]; then
+        fail "sweep $c $fld : 1-rank run produced no table"; continue
+    fi
+    for n in $RANKS; do
+      [ "$n" = "1" ] && continue
+      $MPIRUN -n "$n" "$SWEEP" infile=$c isoCompName=$fld is_per="$ALLPER" \
+          vlo=$LO vhi=$HI nval=12 area=0 2>/dev/null | sinv > "sw_${c}_${fld}_n${n}.txt"
+      if diff -q "sw_${c}_${fld}_ref.txt" "sw_${c}_${fld}_n${n}.txt" > /dev/null; then
+          pass "sweep $c $fld  n=$n"
+      else
+          fail "sweep $c $fld  n=$n"
+          diff "sw_${c}_${fld}_ref.txt" "sw_${c}_${fld}_n${n}.txt" | sed 's/^/        /' | head -8
+      fi
+    done
+  done
+done
+echo
+else
+echo "=== 5. sweep invariance: SKIPPED (no MPI amrSweep built) ============="
 echo
 fi
 

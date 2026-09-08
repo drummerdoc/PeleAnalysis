@@ -25,7 +25,7 @@ RANKS=${RANKS:-"1 2 3 4"}
 export MPIRUN=${MPIRUN:-mpiexec}
 SKIP_BUILD=${SKIP_BUILD:-0}
 
-TARGETS="amrComplexVerify amrContourVerify makeTestPlt surfMEFtoDAT"
+TARGETS="amrComplexVerify amrContourVerify amrSweep makeTestPlt surfMEFtoDAT"
 LOGDIR=${LOGDIR:-$(pwd)/amr_test_logs}
 mkdir -p "$LOGDIR"
 

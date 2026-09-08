@@ -52,12 +52,12 @@ void AMRSegment::localUnionFind ()
     // element touches -- is still a component with a volume, rather than
     // silently absent from the tally.
     std::set<long> owned;
-    m_cx.forEachNode([&] (const Node& n, const Real* vals, Real cvol, bool)
+    m_cx.forEachNode([&] (const Node& n, const Real* vals, Real, bool)
     {
         owned.insert(n.gid);
         if (inSet(vals[ic])) {
             m_parent[n.gid] = n.gid;
-            m_vol[n.gid] = cvol;
+            m_lev[n.gid] = n.level;
         }
     });
 
@@ -101,43 +101,52 @@ void AMRSegment::mergeAcrossRanks ()
         unite(g, r);
     }
 
-    for (auto& kv : m_vol) { m_label[kv.first] = findRoot(kv.first); }
+    for (auto& kv : m_lev) { m_label[kv.first] = findRoot(kv.first); }
 }
 
 void AMRSegment::tally ()
 {
-    // Per-label volume and node count, summed over OWNED nodes only so
-    // nothing is double counted, then merged across ranks.
-    std::map<long,std::pair<Real,long>> local;
-    for (auto& kv : m_vol) {
-        const long lab = m_label[kv.first];
-        auto& e = local[lab];
-        e.first  += kv.second;
-        e.second += 1;
-    }
+    // Integer counts per (label, level), summed over OWNED nodes only so
+    // nothing is double counted. Volume is formed from those counts at the
+    // end, so it is an exact function of integers and identical at any rank
+    // count.
+    std::map<std::pair<long,int>,long> local;
+    for (auto& kv : m_lev) { ++local[std::make_pair(m_label[kv.first], kv.second)]; }
 
-    Vector<Long>  labs;
-    Vector<Real>  vols;
-    Vector<Long>  cnts_;
+    Vector<Long> labs, levs, cnts_;
     for (auto& kv : local) {
-        labs.push_back(Long(kv.first));
-        vols.push_back(kv.second.first);
-        cnts_.push_back(Long(kv.second.second));
+        labs.push_back(Long(kv.first.first));
+        levs.push_back(Long(kv.first.second));
+        cnts_.push_back(Long(kv.second));
     }
 
     allGather(labs);
+    allGather(levs);
     allGather(cnts_);
-    allGather(vols);
 
-    std::map<long,std::pair<Real,long>> merged;
+    std::map<std::pair<long,int>,long> merged;
     for (std::size_t i = 0; i < labs.size(); ++i) {
-        auto& e = merged[long(labs[i])];
-        e.first  += vols[i];
-        e.second += long(cnts_[i]);
+        merged[std::make_pair(long(labs[i]), int(levs[i]))] += long(cnts_[i]);
+    }
+
+    Vector<Real> dV;
+    dV.resize(std::size_t(m_cx.nLevels()), 0.0);
+    for (int lev = 0; lev < m_cx.nLevels(); ++lev) {
+        const auto dx = m_cx.geom(lev).CellSize();
+        Real v = 1.0;
+        for (int d = 0; d < AMREX_SPACEDIM; ++d) { v *= dx[d]; }
+        dV[std::size_t(lev)] = v;
+    }
+
+    std::map<long,std::pair<Real,long>> byLabel;
+    for (auto& kv : merged) {
+        auto& e = byLabel[kv.first.first];
+        e.first  += Real(kv.second) * dV[std::size_t(kv.first.second)];
+        e.second += kv.second;
     }
 
     m_comps.clear();
-    for (auto& kv : merged) {
+    for (auto& kv : byLabel) {
         Component c;
         c.label  = kv.first;
         c.volume = kv.second.first;

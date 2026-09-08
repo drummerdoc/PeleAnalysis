@@ -38,7 +38,7 @@ public:
     struct Component
     {
         long        label  = -1;   // minimum gid in the component
-        amrex::Real volume = 0;
+        amrex::Real volume = 0;    // exact: sum over levels of count * dV(level)
         long        nNodes = 0;
     };
 
@@ -66,7 +66,15 @@ private:
 
     std::unordered_map<long,long> m_parent;   // union-find over gids
     std::unordered_map<long,long> m_label;    // owned gid -> component label
-    std::unordered_map<long,amrex::Real> m_vol;   // owned gid -> cell volume
+    // Owned gid -> the LEVEL of the cell it names, not that cell's volume.
+    //
+    // Cell volumes take only one value per level, so tallying integer counts
+    // per level and multiplying at the end makes a component's volume an
+    // exact function of integers. Accumulating reals instead would make the
+    // total depend on the order the partial sums were formed, and so on the
+    // rank count -- a scientific output that moves in its last bits when you
+    // change the decomposition is a bad output, and here it is avoidable.
+    std::unordered_map<long,int> m_lev;
     std::set<long>                       m_ownedSet;
 
     amrex::Vector<Component> m_comps;
