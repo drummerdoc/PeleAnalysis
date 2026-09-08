@@ -8,6 +8,7 @@
 
 #include <array>
 #include <string>
+#include <algorithm>
 
 namespace amrcomplex {
 
@@ -99,6 +100,22 @@ struct Element
     static constexpr int NNODE = (AMREX_SPACEDIM == 2 ? 4 : 8);
     long n[NNODE];
 };
+
+// Corner offsets of the dual cell, VTK_QUAD / VTK_HEXAHEDRON order.
+AMREX_FORCE_INLINE
+amrex::IntVect cornerOffset (int c) noexcept
+{
+#if (AMREX_SPACEDIM == 2)
+    const int ox[4] = {0,1,1,0};
+    const int oy[4] = {0,0,1,1};
+    return amrex::IntVect(ox[c], oy[c]);
+#else
+    const int ox[8] = {0,1,1,0,0,1,1,0};
+    const int oy[8] = {0,0,1,1,0,0,1,1};
+    const int oz[8] = {0,0,0,0,1,1,1,1};
+    return amrex::IntVect(ox[c], oy[c], oz[c]);
+#endif
+}
 
 //
 // A conforming, optionally periodic cell complex over an AMReX plotfile
@@ -204,6 +221,47 @@ public:
 
     // Centre of the cell naming this node, at that node's own level.
     amrex::RealVect nodePosition (const Node& n) const noexcept;
+
+    // The canonical element traversal. Every consumer goes through this, so
+    // that ownership, corner ordering and the VALID test are stated once. Two
+    // copies of this loop is two chances to disagree about which elements
+    // exist -- and the geometry would still verify while the surface came out
+    // wrong.
+    //
+    // func(const Node (&corners)[NNODE], const Real* values)
+    //   values is nComp() per corner, corner-major: values[c*nComp()+n].
+    template <class F>
+    void forEachElement (F&& func) const
+    {
+        amrex::Vector<amrex::Real> vals(std::size_t(Element::NNODE)*std::size_t(std::max(m_ncomp,1)));
+        for (int lev = 0; lev < m_nlev; ++lev) {
+            for (amrex::MFIter mfi(m_nodes[lev]); mfi.isValid(); ++mfi) {
+                auto const& a = m_nodes[lev].const_array(mfi);
+                amrex::Array4<const amrex::Real> fv;
+                if (m_ncomp > 0) { fv = m_field[lev].const_array(mfi); }
+                const amrex::BoxList owned = ownedBaseRegions(lev, mfi.index());
+                for (const amrex::Box& bbx : owned) {
+                    AMREX_LOOP_3D(bbx, i, j, k,
+                    {
+                        const amrex::IntVect iv(AMREX_D_DECL(i,j,k));
+                        Node cn[Element::NNODE];
+                        bool ok = true;
+                        for (int c = 0; c < Element::NNODE; ++c) {
+                            const amrex::IntVect jv = iv + cornerOffset(c);
+                            const Node& n = a(AMREX_D_DECL(jv[0],jv[1],jv[2]));
+                            if (n.type != Node::VALID) { ok = false; break; }
+                            cn[c] = n;
+                            for (int m = 0; m < m_ncomp; ++m) {
+                                vals[std::size_t(c)*std::size_t(m_ncomp)+std::size_t(m)]
+                                    = fv(AMREX_D_DECL(jv[0],jv[1],jv[2]),m);
+                            }
+                        }
+                        if (ok) { func(cn, vals.dataPtr()); }
+                    });
+                }
+            }
+        }
+    }
 
 private:
 

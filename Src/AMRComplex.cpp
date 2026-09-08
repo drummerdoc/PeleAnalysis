@@ -54,22 +54,6 @@ long lexIndex (const IntVect& iv, const Box& bx) noexcept
 #endif
 }
 
-// Corner offsets of the dual cell, VTK_QUAD / VTK_HEXAHEDRON order.
-AMREX_FORCE_INLINE
-IntVect cornerOffset (int c) noexcept
-{
-#if (AMREX_SPACEDIM == 2)
-    const int ox[4] = {0,1,1,0};
-    const int oy[4] = {0,0,1,1};
-    return IntVect(ox[c], oy[c]);
-#else
-    const int ox[8] = {0,1,1,0,0,1,1,0};
-    const int oy[8] = {0,0,1,1,0,0,1,1};
-    const int oz[8] = {0,0,0,0,1,1,1,1};
-    return IntVect(ox[c], oy[c], oz[c]);
-#endif
-}
-
 // Faces of the dual cell in VTK_HEXAHEDRON corner numbering.
 #if (AMREX_SPACEDIM == 2)
 using FaceKey = std::array<long,4>;
@@ -464,28 +448,12 @@ Real AMRComplex::expectedVolume () const
 void AMRComplex::buildElements ()
 {
     m_elements.clear();
-
-    for (int lev = 0; lev < m_nlev; ++lev) {
-        for (MFIter mfi(m_nodes[lev]); mfi.isValid(); ++mfi) {
-            auto const& a = m_nodes[lev].const_array(mfi);
-            const BoxList owned = ownedBaseRegions(lev, mfi.index());
-            for (const Box& bbx : owned) {
-            AMREX_LOOP_3D(bbx, i, j, k,
-            {
-                const IntVect iv(AMREX_D_DECL(i,j,k));
-                Element e;
-                bool ok = true;
-                for (int c = 0; c < Element::NNODE; ++c) {
-                    const IntVect jv = iv + cornerOffset(c);
-                    const Node& n = a(AMREX_D_DECL(jv[0],jv[1],jv[2]));
-                    if (n.type != Node::VALID) { ok = false; break; }
-                    e.n[c] = n.gid;
-                }
-                if (ok) { m_elements.push_back(e); }
-            });
-            }
-        }
-    }
+    forEachElement([&] (const Node (&cn)[Element::NNODE], const Real*)
+    {
+        Element e;
+        for (int c = 0; c < Element::NNODE; ++c) { e.n[c] = cn[c].gid; }
+        m_elements.push_back(e);
+    });
 
     if (m_params.verbose) {
         Long ne = Long(m_elements.size());
@@ -561,121 +529,99 @@ AMRComplex::VerifyReport AMRComplex::verify () const
                 }
                 nodeSum = (nodeSum + foldChecksum(h)) % CHECKSUM_MOD;
             });
-
-            const BoxList owned = ownedBaseRegions(lev, mfi.index());
-            for (const Box& bbx : owned) {
-            AMREX_LOOP_3D(bbx, i, j, k,
-            {
-                const IntVect iv(AMREX_D_DECL(i,j,k));
-                Node cn[Element::NNODE];
-                bool ok = true;
-                for (int c = 0; c < Element::NNODE; ++c) {
-                    const IntVect jv = iv + cornerOffset(c);
-                    const Node& n = a(AMREX_D_DECL(jv[0],jv[1],jv[2]));
-                    if (n.type != Node::VALID) { ok = false; break; }
-                    cn[c] = n;
-                }
-                // AMREX_LOOP_3D expands to plain nested loops, so this
-                // continues the innermost loop -- which is what is wanted.
-                if (!ok) { continue; }
-
-                ++nElt;
-
-                int distinct = 0;
-                for (int c = 0; c < Element::NNODE; ++c) {
-                    bool seen = false;
-                    for (int p = 0; p < c; ++p) {
-                        if (cn[p].gid == cn[c].gid) { seen = true; break; }
-                    }
-                    if (!seen) { ++distinct; }
-                }
-                ++shape[distinct];
-
-                // Element hash over the sorted corner gids, so the same cell
-                // hashes identically however it was reached.
-                {
-                    long g[Element::NNODE];
-                    for (int c = 0; c < Element::NNODE; ++c) { g[c] = cn[c].gid; }
-                    std::sort(g, g + Element::NNODE);
-                    unsigned long long h = 1469598103934665603ULL;
-                    for (int c = 0; c < Element::NNODE; ++c) {
-                        mixIn(h, (unsigned long long)(g[c]));
-                    }
-                    eltSum = (eltSum + foldChecksum(h)) % CHECKSUM_MOD;
-                }
-
-                // Faces of this element, each reduced to its set of distinct
-                // gids. A face shared by two cells must present the same set
-                // from both sides; anything else is a T-junction.
-                for (int f = 0; f < NFACE; ++f) {
-                    FaceKey key;
-                    key[0] = key[1] = key[2] = key[3] = -1;
-                    int nd = 0;
-                    for (int c = 0; c < 4; ++c) {
-                        const long g = cn[FACE[f][c]].gid;
-                        bool seen = false;
-                        for (int q = 0; q < nd; ++q) { if (key[q]==g) { seen=true; break; } }
-                        if (!seen) { key[nd++] = g; }
-                    }
-                    if (nd < 3) { ++degenFaces; continue; }
-                    std::sort(key.begin(), key.begin()+nd);
-                    ++faceCount[key];
-
-                    unsigned long long fh = 1469598103934665603ULL;
-                    for (int q = 0; q < nd; ++q) { mixIn(fh, (unsigned long long)(key[q])); }
-                    facePar ^= fh;
-                }
-
-                // Corner offsets from corner 0, minimum image in periodic
-                // directions. Identity is topological, so a wrap element's
-                // corners are a domain length apart in raw coordinates; using
-                // those directly is precisely the defect this design removes.
-                const RealVect p0 = nodePosition(cn[0]);
-                RealVect q[Element::NNODE];
-                for (int c = 0; c < Element::NNODE; ++c) {
-                    const RealVect p = nodePosition(cn[c]);
-                    for (int d = 0; d < AMREX_SPACEDIM; ++d) {
-                        Real s = p[d] - p0[d];
-                        if (m_params.is_per[d]) {
-                            if (s >  0.5*L[d]) { s -= L[d]; }
-                            if (s < -0.5*L[d]) { s += L[d]; }
-                        }
-                        q[c][d] = s;
-                    }
-                }
-
-#if (AMREX_SPACEDIM == 2)
-                {
-                    const int TRI[2][3] = {{0,1,2},{0,2,3}};
-                    for (int t = 0; t < 2; ++t) {
-                        const RealVect& u = q[TRI[t][1]];
-                        const RealVect& v = q[TRI[t][2]];
-                        const Real term  = Real(0.5)*std::abs(u[0]*v[1] - u[1]*v[0]);
-                        const Real ky    = term - volComp;
-                        const Real ksum  = volSum + ky;
-                        volComp = (ksum - volSum) - ky;
-                        volSum  = ksum;
-                    }
-                }
-#else
-                for (int t = 0; t < 6; ++t) {
-                    const RealVect& u = q[TET[t][1]];
-                    const RealVect& v = q[TET[t][2]];
-                    const RealVect& w = q[TET[t][3]];
-                    const Real det = u[0]*(v[1]*w[2]-v[2]*w[1])
-                                   - u[1]*(v[0]*w[2]-v[2]*w[0])
-                                   + u[2]*(v[0]*w[1]-v[1]*w[0]);
-                    const Real term  = std::abs(det)/Real(6.0);
-                    const Real ky    = term - volComp;
-                    const Real ksum  = volSum + ky;
-                    volComp = (ksum - volSum) - ky;
-                    volSum  = ksum;
-                }
-#endif
-            });
-            }
         }
     }
+
+    // The element pass goes through the canonical traversal, so verify() and
+    // every other consumer agree by construction about which elements exist.
+    forEachElement([&] (const Node (&cn)[Element::NNODE], const Real*)
+    {
+        ++nElt;
+
+        int distinct = 0;
+        for (int c = 0; c < Element::NNODE; ++c) {
+            bool seen = false;
+            for (int q = 0; q < c; ++q) {
+                if (cn[q].gid == cn[c].gid) { seen = true; break; }
+            }
+            if (!seen) { ++distinct; }
+        }
+        ++shape[distinct];
+
+        {
+            long g[Element::NNODE];
+            for (int c = 0; c < Element::NNODE; ++c) { g[c] = cn[c].gid; }
+            std::sort(g, g + Element::NNODE);
+            unsigned long long h = 1469598103934665603ULL;
+            for (int c = 0; c < Element::NNODE; ++c) {
+                mixIn(h, (unsigned long long)(g[c]));
+            }
+            eltSum = (eltSum + foldChecksum(h)) % CHECKSUM_MOD;
+        }
+
+        for (int f = 0; f < NFACE; ++f) {
+            FaceKey key;
+            key[0] = key[1] = key[2] = key[3] = -1;
+            int nd = 0;
+            for (int c = 0; c < 4; ++c) {
+                const long g = cn[FACE[f][c]].gid;
+                bool seen = false;
+                for (int q = 0; q < nd; ++q) { if (key[q]==g) { seen=true; break; } }
+                if (!seen) { key[nd++] = g; }
+            }
+            if (nd < 3) { ++degenFaces; continue; }
+            std::sort(key.begin(), key.begin()+nd);
+            ++faceCount[key];
+            unsigned long long fh = 1469598103934665603ULL;
+            for (int q = 0; q < nd; ++q) { mixIn(fh, (unsigned long long)(key[q])); }
+            facePar ^= fh;
+        }
+
+        // Corner offsets from corner 0, minimum image in periodic directions.
+        const RealVect p0 = nodePosition(cn[0]);
+        RealVect q[Element::NNODE];
+        for (int c = 0; c < Element::NNODE; ++c) {
+            const RealVect p = nodePosition(cn[c]);
+            for (int d = 0; d < AMREX_SPACEDIM; ++d) {
+                Real sdd = p[d] - p0[d];
+                if (m_params.is_per[d]) {
+                    if (sdd >  0.5*L[d]) { sdd -= L[d]; }
+                    if (sdd < -0.5*L[d]) { sdd += L[d]; }
+                }
+                q[c][d] = sdd;
+            }
+        }
+
+#if (AMREX_SPACEDIM == 2)
+        {
+            const int TRI[2][3] = {{0,1,2},{0,2,3}};
+            for (int t = 0; t < 2; ++t) {
+                const RealVect& u = q[TRI[t][1]];
+                const RealVect& v = q[TRI[t][2]];
+                const Real term  = Real(0.5)*std::abs(u[0]*v[1] - u[1]*v[0]);
+                const Real ky    = term - volComp;
+                const Real ksum  = volSum + ky;
+                volComp = (ksum - volSum) - ky;
+                volSum  = ksum;
+            }
+        }
+#else
+        for (int t = 0; t < 6; ++t) {
+            const RealVect& u = q[TET[t][1]];
+            const RealVect& v = q[TET[t][2]];
+            const RealVect& w = q[TET[t][3]];
+            const Real det = u[0]*(v[1]*w[2]-v[2]*w[1])
+                           - u[1]*(v[0]*w[2]-v[2]*w[0])
+                           + u[2]*(v[0]*w[1]-v[1]*w[0]);
+            const Real term  = std::abs(det)/Real(6.0);
+            const Real ky    = term - volComp;
+            const Real ksum  = volSum + ky;
+            volComp = (ksum - volSum) - ky;
+            volSum  = ksum;
+        }
+#endif
+    });
+
 
     ParallelDescriptor::ReduceRealSum(volSum);
     ParallelDescriptor::ReduceLongSum(nElt);

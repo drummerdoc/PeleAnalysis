@@ -35,6 +35,7 @@
 #   cd Src
 #   make -f GNUmakefile.AMRComplex USE_MPI=TRUE COMP=llvm -j8
 #   make -f GNUmakefile.AMRComplex USE_MPI=TRUE COMP=llvm EBASE=makeTestPlt -j8
+#   make -f GNUmakefile.AMRComplex USE_MPI=TRUE COMP=llvm EBASE=amrContourVerify -j8
 #
 # Then, from any writable directory:
 #
@@ -72,6 +73,7 @@ MPIRUN=${MPIRUN:-mpiexec}
 
 shopt -s nullglob
 VERIFY=("$SRC"/amrComplexVerify3d.*MPI.ex)
+CONTOUR=("$SRC"/amrContourVerify3d.*MPI.ex)
 MAKEPLT=("$SRC"/makeTestPlt3d.*MPI.ex)
 shopt -u nullglob
 
@@ -82,6 +84,7 @@ if [ ${#VERIFY[@]} -eq 0 ] || [ ${#MAKEPLT[@]} -eq 0 ]; then
 fi
 VERIFY=${VERIFY[0]}
 MAKEPLT=${MAKEPLT[0]}
+CONTOUR=${CONTOUR[0]:-}
 
 WORK=${WORK:-$(pwd)/amrComplex_mpi_test}
 mkdir -p "$WORK" && cd "$WORK" || exit 1
@@ -218,6 +221,40 @@ for mgs in 8 16 32; do
   fi
 done
 echo
+
+# --------------------------------------------------------------------------
+# 4. The contour, same treatment.
+#
+# The surface is where floating point finally enters: vertices are
+# interpolated along edges, so nothing here is bitwise-exact the way the
+# complex is. The invariants are the integer ones -- vertex and triangle
+# counts, and the edge parity, an XOR over every triangle-edge instance that
+# is zero exactly when the surface is closed.
+#
+# Area is deliberately not compared for equality, for the same reason the
+# volume is not.
+# --------------------------------------------------------------------------
+if [ -n "$CONTOUR" ]; then
+echo "=== 4. contour invariance ============================================"
+cinv () { sed -n '/=== AMRContour verify ===/,/closed surface/p' | grep -v '^$' | grep -v '^~'; }
+for c in $CASES; do
+  $MPIRUN -n 1 "$CONTOUR" infile=$c is_per="1 1 1" isoVal=0 2>/dev/null | cinv > "ct_${c}_ref.txt"
+  for n in $RANKS; do
+    [ "$n" = "1" ] && continue
+    $MPIRUN -n "$n" "$CONTOUR" infile=$c is_per="1 1 1" isoVal=0 2>/dev/null | cinv > "ct_${c}_n${n}.txt"
+    if diff -q "ct_${c}_ref.txt" "ct_${c}_n${n}.txt" > /dev/null; then
+        pass "contour $c  n=$n"
+    else
+        fail "contour $c  n=$n"
+        diff "ct_${c}_ref.txt" "ct_${c}_n${n}.txt" | sed 's/^/        /'
+    fi
+  done
+done
+echo
+else
+echo "=== 4. contour invariance: SKIPPED (no MPI amrContourVerify built) ==="
+echo
+fi
 
 # --------------------------------------------------------------------------
 echo "======================================================================"
