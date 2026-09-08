@@ -1079,3 +1079,77 @@ Prevent the bad state at creation rather than explaining the residual later.
   shell or precompute an ownership mask when it starts to matter.
 - Field values on nodes; tet subdivision; `.vtu`/`.pvtu` output; the plotfile
   writer of §11.2.
+
+---
+
+## 13. State of play: the complex and the contour are done and verified
+
+Branch `amr-complex`. Sections 9 through 12 are answered; what follows is what
+was actually built and what it now guarantees.
+
+### 13.1 What exists
+
+| file | what it is |
+|---|---|
+| `Src/AMRComplex.{H,cpp}` | the conforming multilevel complex |
+| `Src/AMRContour.{H,cpp}` | marching tetrahedra on it |
+| `Src/amrComplexVerify.cpp` | the complex gate |
+| `Src/amrContourVerify.cpp` | the surface gate |
+| `Src/makeTestPlt.cpp` | synthetic properly-nested hierarchies, sphere SDF |
+| `Src/GNUmakefile.AMRComplex` | standalone, AMReX-only, no PelePhysics |
+| `Tools/amrComplexMpiTest.sh` | the four-section MPI harness |
+
+### 13.2 What is verified
+
+- **The complex tiles exactly.** Relative volume error zero across 1-3 levels,
+  `ref_ratio` 2 and 4, periodic, non-periodic and mixed.
+- **It is face-conforming**, which the volume gate cannot see: volume is
+  additive over any decomposition, so a T-junctioned complex closes exactly.
+  Measured by face incidence in serial and by an XOR parity globally.
+- **The surface is closed with Euler characteristic 2** in every case, and the
+  area converges at **second order**: 32^3 `-2.799e-3`, 64^3 `-6.985e-4`,
+  128^3 `-1.745e-4`, ratios 4.007 and 4.003.
+- **All of it is rank-invariant.** 91 of 91 checks, 1 to 8 ranks including odd
+  counts, across SFC/KNAPSACK/ROUNDROBIN distributions and varying
+  `max_grid_size`. Byte-identical, not merely close.
+
+### 13.3 The subdivision rule, settled
+
+Cone each cell from its **minimum-gid corner**. That puts the min-gid diagonal
+on all six faces automatically -- for the three containing the apex it follows
+from a corner minimal over the cell being minimal over any face containing it;
+for the three opposite it is imposed. Two cells sharing a face see the same
+four gids and split it identically, across levels included.
+
+The parity rule §7.1 worried about is not needed and should not be used:
+parity is keyed on indices, which is precisely what differs between levels.
+
+### 13.4 Two lessons that cost real time
+
+**Area is not a topology test.** Forcing an inconsistent diagonal produces
+10401 boundary edges, 445 non-manifold edges and `chi = -2976`, while
+reporting an area error of `-0.0012` -- *better* than the correct rule's
+`-0.0016`. A surface riddled with cracks can score better on area than a sound
+one. The negative control is checked in (`diagonal_rule=0`) so the gate can be
+re-falsified whenever the subdivision changes.
+
+**Never let an array index into a checksum.** The same bug appeared twice: the
+face census summed rank-local counts, and the edge parity hashed rank-local
+vertex indices. Both times the structure was correct and only the
+instrumentation was wrong, and both times the symptom was alarming -- an open
+surface reported on a closed one. Standing rule: anything entering a checksum
+is named by a gid or a tuple of gids, never by a position in an array.
+
+### 13.5 Next
+
+- The Reeb sweep. It needs the tet edges this already builds, a total order on
+  nodes (gid serves, and is rank-independent), and union-find. §3's
+  `[DECIDE]` -- merge tree, per-component Euler characteristic, or full Reeb
+  graph with loop surgery -- is still open and still sets the scope.
+- `isosurface2`: MEF/XDMF output from `AMRContour`, then the comparison that
+  retires `isosurface.cpp` (§8).
+- **Unmeasured, and needs real data rather than another synthetic test:**
+  whether `curvature.cpp` is happy with normals derived from tets in the
+  stitch band. Degenerate hexes subdivide into poorly-shaped tets, and area is
+  insensitive to that while curvature is not (§7.1).
+- Wall extrapolation (§7.2), still deliberately deferred.
