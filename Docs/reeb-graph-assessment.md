@@ -1227,3 +1227,119 @@ traversal.
   geometry.
 - `.pvtu` output, to retire the gather-to-IOProc in `writeMEF`.
 - Wall extrapolation (§7.2), still deliberately deferred.
+
+---
+
+## 15. The actual target, and what it settles
+
+### 15.1 The problem
+
+Characterising the effects and time-dependent dynamics of the thermodiffusive
+instability in lean premixed hydrogen flames -- the cellular structures these
+flames spontaneously form, whose sizes and separations change dramatically
+with mixture and with the turbulence of the approach flow. Configurations
+include a doubly periodic flamesheet with inflow/outflow in the third
+direction, and growing flame kernels, in 2D and 3D, under different transport
+models.
+
+**What is not known, and what the tool exists to explore: what a cell IS.**
+There are chemistry arguments about when a local flame is self-sustaining,
+notions of back-supported structure, and a set of observational surrogates
+that have traditionally stood in for the presence of a flame -- fuel
+consumption rate, temperature above a threshold, a flame intermediate. Which
+to use, and at what threshold, is open.
+
+A complication specific to these flames: because they are not unity-Lewis,
+the progress variables do not align. Contours of fuel, temperature and
+intermediates cross one another. Each may tell a different story in detail
+while giving a similar global picture -- and whether that is so is itself one
+of the questions.
+
+### 15.2 What that settles
+
+**The spec is not "compute the topology of field X". It is "compare candidate
+definitions within one frame."** So the pipeline must be field-agnostic and
+cheap to re-run, and its outputs must be directly comparable across
+definitions. Adding a candidate surrogate should be a command-line argument.
+
+**[DECIDE] resolved (§3): merge tree, not Reeb graph.** Cells are connected
+components of a super-level set, and their appearance, growth and merging is
+exactly a merge-tree story. Two consequences:
+
+- **Persistence is the robustness measure that was asked for.** Rather than
+  choosing a threshold, compute all thresholds at once; each cell then carries
+  a birth value, a merge value, and their difference -- how far the knob must
+  move to make it vanish. The reportable quantity is `N(p)`, the number of
+  cells with persistence above `p`. A plateau means a defensible scale; a
+  featureless continuum means no threshold is defensible, which is itself the
+  finding.
+- **Periodicity costs nothing.** A join tree is always a tree, on a torus as
+  much as anywhere: components merge monotonically and cannot form a cycle.
+  Loop surgery is needed for the contour tree and the Reeb graph, neither of
+  which is required here. The doubly and triply periodic cases, with
+  arbitrary boundary planes, come free -- periodicity enters only as adjacency
+  in the union-find, which `AMRComplex` already supplies.
+
+**Two additions the merge tree does not cover.**
+
+- The crescent whose tips join to leave one contour inside another is a *b1*
+  event: the region stays one connected component and the merge tree is blind
+  to it. It needs per-component boundary invariants -- count the boundary
+  curves of each labelled region in 2D, Euler characteristic per surface
+  component in 3D. Small, and it sits on the segmentation.
+- Euler characteristic is the wrong invariant in 2D, where every closed curve
+  has `chi = 0`. The 2D statement is the number of boundary components and
+  their homology class on the torus; a curve that wraps has no inside, so
+  "contained within" is conditional on being contractible.
+
+### 15.3 One engine serves both comparisons
+
+Matching segmentations between consecutive snapshots by spatial overlap is the
+same operation as matching a fuel-consumption segmentation against a
+temperature segmentation on the same snapshot. Built once, it gives both:
+whether a cell persists in time, and whether two surrogates identify the same
+cells. The second measures the open question directly -- where surrogates
+agree the structure is definition-independent, and where they diverge that is
+differential diffusion expressed as topology.
+
+Segmentation as a plotfile is what makes this work in practice: an integer
+label per cell of the hierarchy feeds straight into `conditionalMean`, so
+statistics of any field inside cells defined by any other field is a
+one-liner. That is the common context the surrogates need to be compared in.
+
+**A hypothesis worth testing, not asserting:** a merge-tree branch that never
+becomes an independent maximum -- a saddle-separated shoulder of a larger
+structure -- is structurally distinct from one that is its own high-persistence
+branch. If back-supported structures are the former and self-sustaining ones
+the latter, persistence measures the degree of independence. Physics judgement
+required.
+
+### 15.4 Build order, and why the sweep comes first
+
+`N(v)` and `A(v)` -- the count of super-level-set components and the isosurface
+area as functions of threshold -- can be had now, by looping the existing
+contour and adding a union-find over the complex. That is the smallest thing
+that produces a scientific result, it runs on real snapshots before either the
+merge tree or the tracker exists, and it answers whether plateaus or scale
+gaps are present before anything is designed around the assumption that they
+are.
+
+It is also a coarse sampling of the merge tree, so nothing is wasted: **when
+the merge tree is built it must reproduce the sweep's `N(v)` exactly at every
+sampled threshold.** That is a free and sharp regression gate, of the kind
+that has caught four real defects in this work already.
+
+Staging:
+
+1. **Sweep** -- region components and sizes, surface area, per threshold.
+   Distributed union-find over the complex; component labels are the minimum
+   gid in the component, hence rank-independent by construction.
+2. **Segmentation output** as a plotfile, and contour component counts.
+3. **Merge tree**, gated on reproducing the sweep.
+4. **Overlap matching**, serving time tracking and cross-surrogate comparison.
+5. Boundary invariants for the b1 events.
+
+**Open [DECIDE]:** whether a cell is a region thresholded from above (high
+reaction rate, high temperature) or from below. The sweep supports both, and
+the answer may differ per surrogate, so it stays a runtime choice rather than
+a design commitment.
