@@ -1,5 +1,7 @@
 #include "AMRSegment.H"
 
+#include "AMRParallel.H"
+
 #include <AMReX_ParallelDescriptor.H>
 #include <algorithm>
 #include <map>
@@ -88,21 +90,7 @@ void AMRSegment::mergeAcrossRanks ()
         pairs.push_back(Long(findRoot(g)));
     }
 
-#ifdef AMREX_USE_MPI
-    if (ParallelDescriptor::NProcs() > 1) {
-        const int nproc  = ParallelDescriptor::NProcs();
-        int cnt = int(pairs.size());
-        Vector<int> cnts(nproc,0), offs(nproc,0);
-        MPI_Allgather(&cnt,1,MPI_INT,cnts.dataPtr(),1,MPI_INT,
-                      ParallelDescriptor::Communicator());
-        for (int i=1;i<nproc;++i) { offs[i]=offs[i-1]+cnts[i-1]; }
-        Vector<Long> all(std::size_t(offs[nproc-1]+cnts[nproc-1]));
-        MPI_Allgatherv(pairs.dataPtr(),cnt,MPI_LONG_LONG,all.dataPtr(),
-                       cnts.dataPtr(),offs.dataPtr(),MPI_LONG_LONG,
-                       ParallelDescriptor::Communicator());
-        pairs.swap(all);
-    }
-#endif
+    allGather(pairs);
 
     // Every rank replays the same union-find over the same gathered pairs, so
     // all ranks reach identical labels without a broadcast.
@@ -137,30 +125,9 @@ void AMRSegment::tally ()
         cnts_.push_back(Long(kv.second.second));
     }
 
-#ifdef AMREX_USE_MPI
-    if (ParallelDescriptor::NProcs() > 1) {
-        const int nproc = ParallelDescriptor::NProcs();
-        int n = int(labs.size());
-        Vector<int> cs(nproc,0), os(nproc,0);
-        MPI_Allgather(&n,1,MPI_INT,cs.dataPtr(),1,MPI_INT,
-                      ParallelDescriptor::Communicator());
-        for (int i=1;i<nproc;++i) { os[i]=os[i-1]+cs[i-1]; }
-        const int tot = os[nproc-1]+cs[nproc-1];
-        Vector<Long> aL(std::size_t(tot)), aC(std::size_t(tot));
-        Vector<Real> aV(std::size_t(tot));
-        MPI_Allgatherv(labs.dataPtr(),n,MPI_LONG_LONG,aL.dataPtr(),
-                       cs.dataPtr(),os.dataPtr(),MPI_LONG_LONG,
-                       ParallelDescriptor::Communicator());
-        MPI_Allgatherv(cnts_.dataPtr(),n,MPI_LONG_LONG,aC.dataPtr(),
-                       cs.dataPtr(),os.dataPtr(),MPI_LONG_LONG,
-                       ParallelDescriptor::Communicator());
-        MPI_Allgatherv(vols.dataPtr(),n,ParallelDescriptor::Mpi_typemap<Real>::type(),
-                       aV.dataPtr(),cs.dataPtr(),os.dataPtr(),
-                       ParallelDescriptor::Mpi_typemap<Real>::type(),
-                       ParallelDescriptor::Communicator());
-        labs.swap(aL); cnts_.swap(aC); vols.swap(aV);
-    }
-#endif
+    allGather(labs);
+    allGather(cnts_);
+    allGather(vols);
 
     std::map<long,std::pair<Real,long>> merged;
     for (std::size_t i = 0; i < labs.size(); ++i) {

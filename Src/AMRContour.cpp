@@ -1,5 +1,7 @@
 #include "AMRContour.H"
 
+#include "AMRParallel.H"
+
 #include <AMReX_ParallelDescriptor.H>
 
 #include <algorithm>
@@ -599,48 +601,11 @@ void AMRContour::writeMEF (const std::string& outfile,
         }
     }
 
-#ifdef AMREX_USE_MPI
-    if (ParallelDescriptor::NProcs() > 1) {
-        auto gatherL = [] (Vector<Long>& v) {
-            const int nproc = ParallelDescriptor::NProcs();
-            const int ioproc = ParallelDescriptor::IOProcessorNumber();
-            int cnt = int(v.size());
-            Vector<int> cnts(nproc,0), offs(nproc,0);
-            MPI_Gather(&cnt,1,MPI_INT,cnts.dataPtr(),1,MPI_INT,ioproc,
-                       ParallelDescriptor::Communicator());
-            Vector<Long> recv;
-            if (ParallelDescriptor::IOProcessor()) {
-                for (int i=1;i<nproc;++i) { offs[i]=offs[i-1]+cnts[i-1]; }
-                recv.resize(std::size_t(offs[nproc-1]+cnts[nproc-1]));
-            }
-            MPI_Gatherv(v.dataPtr(),cnt,MPI_LONG_LONG,recv.dataPtr(),
-                        cnts.dataPtr(),offs.dataPtr(),MPI_LONG_LONG,ioproc,
-                        ParallelDescriptor::Communicator());
-            v.swap(recv);
-        };
-        auto gatherR = [] (Vector<Real>& v) {
-            const int nproc = ParallelDescriptor::NProcs();
-            const int ioproc = ParallelDescriptor::IOProcessorNumber();
-            int cnt = int(v.size());
-            Vector<int> cnts(nproc,0), offs(nproc,0);
-            MPI_Gather(&cnt,1,MPI_INT,cnts.dataPtr(),1,MPI_INT,ioproc,
-                       ParallelDescriptor::Communicator());
-            Vector<Real> recv;
-            if (ParallelDescriptor::IOProcessor()) {
-                for (int i=1;i<nproc;++i) { offs[i]=offs[i-1]+cnts[i-1]; }
-                recv.resize(std::size_t(offs[nproc-1]+cnts[nproc-1]));
-            }
-            MPI_Gatherv(v.dataPtr(),cnt,ParallelDescriptor::Mpi_typemap<Real>::type(),
-                        recv.dataPtr(),cnts.dataPtr(),offs.dataPtr(),
-                        ParallelDescriptor::Mpi_typemap<Real>::type(),ioproc,
-                        ParallelDescriptor::Communicator());
-            v.swap(recv);
-        };
-        gatherL(vkey);
-        gatherR(vdat);
-        gatherL(ekey);
-    }
-#endif
+    // One helper, so the conditional region is a single MPI call rather than
+    // four hand-written gathers -- see AMRParallel.H for why that matters.
+    gatherToIO(vkey);
+    gatherToIO(vdat);
+    gatherToIO(ekey);
 
     if (!ParallelDescriptor::IOProcessor()) { return; }
 
