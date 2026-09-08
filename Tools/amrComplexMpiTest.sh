@@ -46,6 +46,7 @@
 # be used as a gate.
 #
 #   Tools/amrComplexMpiTest.sh 1 2 4 6      # choose the rank counts
+#   DIM=2 Tools/amrComplexMpiTest.sh        # test the 2D build instead
 #   WORK=/scratch/acx Tools/amrComplexMpiTest.sh
 #
 # Launcher. The script invokes "$MPIRUN -n <N> <exe>", which suits mpiexec,
@@ -71,10 +72,15 @@ SRC="$HERE/../Src"
 RANKS=${*:-"1 2 3 4 7 8"}
 MPIRUN=${MPIRUN:-mpiexec}
 
+# Both dimensions are supported. DIM selects which set of executables to test;
+# the periodicity settings and the analytic reference follow from it.
+DIM=${DIM:-3}
+DTAG="${DIM}d"
+
 shopt -s nullglob
-VERIFY=("$SRC"/amrComplexVerify3d.*MPI.ex)
-CONTOUR=("$SRC"/amrContourVerify3d.*MPI.ex)
-MAKEPLT=("$SRC"/makeTestPlt3d.*MPI.ex)
+VERIFY=("$SRC"/amrComplexVerify${DTAG}.*MPI.ex)
+CONTOUR=("$SRC"/amrContourVerify${DTAG}.*MPI.ex)
+MAKEPLT=("$SRC"/makeTestPlt${DTAG}.*MPI.ex)
 shopt -u nullglob
 
 if [ ${#VERIFY[@]} -eq 0 ] || [ ${#MAKEPLT[@]} -eq 0 ]; then
@@ -91,6 +97,7 @@ mkdir -p "$WORK" && cd "$WORK" || exit 1
 
 echo "verify : $VERIFY"
 echo "workdir: $WORK"
+echo "dim    : $DIM"
 echo "ranks  : $RANKS"
 echo
 
@@ -134,8 +141,15 @@ CASES="mpi_L1 mpi_L2 mpi_L3 mpi_R4"
 
 # Parallel arrays, not a single string: each periodicity setting contains
 # spaces, so a space-separated list would be split into nonsense.
-PER_TAG=(per111 per000 per110)
-PER_VAL=("1 1 1" "0 0 0" "1 1 0")
+if [ "$DIM" = "2" ]; then
+    PER_TAG=(per11 per00 per10)
+    PER_VAL=("1 1" "0 0" "1 0")
+    ALLPER="1 1"
+else
+    PER_TAG=(per111 per000 per110)
+    PER_VAL=("1 1 1" "0 0 0" "1 1 0")
+    ALLPER="1 1 1"
+fi
 
 # --------------------------------------------------------------------------
 # 1. Rank invariance.
@@ -181,10 +195,10 @@ echo
 echo "=== 2. distribution invariance (4 ranks, varying strategy) ==========="
 NP=4
 for c in $CASES; do
-  $MPIRUN -n $NP "$VERIFY" infile=$c is_per="1 1 1" varnames=dist \
+  $MPIRUN -n $NP "$VERIFY" infile=$c is_per="$ALLPER" varnames=dist \
       DistributionMapping.strategy=SFC 2>/dev/null | invariants > "str_${c}_sfc.txt"
   for strat in KNAPSACK ROUNDROBIN; do
-    $MPIRUN -n $NP "$VERIFY" infile=$c is_per="1 1 1" varnames=dist \
+    $MPIRUN -n $NP "$VERIFY" infile=$c is_per="$ALLPER" varnames=dist \
         DistributionMapping.strategy=$strat 2>/dev/null | invariants > "str_${c}_${strat}.txt"
     if diff -q "str_${c}_sfc.txt" "str_${c}_${strat}.txt" > /dev/null; then
         pass "$c  SFC vs $strat"
@@ -208,7 +222,7 @@ echo "=== 3. decomposition independence (varying max_grid_size) ============"
 for mgs in 8 16 32; do
   $MPIRUN -n 1 "$MAKEPLT" n_cell=64 nlevels=3 max_grid_size=$mgs \
       outfile=mpi_mgs$mgs > /dev/null 2>&1
-  out=$($MPIRUN -n 4 "$VERIFY" infile=mpi_mgs$mgs is_per="1 1 1" varnames=dist 2>/dev/null)
+  out=$($MPIRUN -n 4 "$VERIFY" infile=mpi_mgs$mgs is_per="$ALLPER" varnames=dist 2>/dev/null)
   res=$( echo "$out" | awk '/RESULT/{print $2}')
   closed=$(echo "$out" | awk '/closed complex/{print $4}')
   unf=$(  echo "$out" | awk '/component\(s\)/{print $5}')
@@ -238,10 +252,10 @@ if [ -n "$CONTOUR" ]; then
 echo "=== 4. contour invariance ============================================"
 cinv () { sed -n '/=== AMRContour verify ===/,/closed surface/p' | grep -v '^$' | grep -v '^~'; }
 for c in $CASES; do
-  $MPIRUN -n 1 "$CONTOUR" infile=$c is_per="1 1 1" isoVal=0 2>/dev/null | cinv > "ct_${c}_ref.txt"
+  $MPIRUN -n 1 "$CONTOUR" infile=$c is_per="$ALLPER" isoVal=0 2>/dev/null | cinv > "ct_${c}_ref.txt"
   for n in $RANKS; do
     [ "$n" = "1" ] && continue
-    $MPIRUN -n "$n" "$CONTOUR" infile=$c is_per="1 1 1" isoVal=0 2>/dev/null | cinv > "ct_${c}_n${n}.txt"
+    $MPIRUN -n "$n" "$CONTOUR" infile=$c is_per="$ALLPER" isoVal=0 2>/dev/null | cinv > "ct_${c}_n${n}.txt"
     if diff -q "ct_${c}_ref.txt" "ct_${c}_n${n}.txt" > /dev/null; then
         pass "contour $c  n=$n"
     else

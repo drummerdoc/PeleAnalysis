@@ -57,11 +57,13 @@ long lexIndex (const IntVect& iv, const Box& bx) noexcept
 // Faces of the dual cell in VTK_HEXAHEDRON corner numbering.
 #if (AMREX_SPACEDIM == 2)
 using FaceKey = std::array<long,4>;
-const int NFACE = 4;
-const int FACE[4][4] = {{0,1,1,0},{1,2,2,1},{2,3,3,2},{3,0,0,3}};
+const int NFACE    = 4;
+const int NFCORNER = 2;                       // a 2D face is an edge
+const int FACE[4][4] = {{0,1,0,1},{1,2,1,2},{2,3,2,3},{3,0,3,0}};
 #else
 using FaceKey = std::array<long,4>;
-const int NFACE = 6;
+const int NFACE    = 6;
+const int NFCORNER = 4;
 const int FACE[6][4] = {{0,1,2,3},{4,5,6,7},{0,1,5,4},
                         {1,2,6,5},{2,3,7,6},{3,0,4,7}};
 #endif
@@ -314,7 +316,7 @@ void AMRComplex::stampCoarseParents (int lev)
                 const IntVect civ = amrex::coarsen(IntVect(AMREX_D_DECL(i,j,k)), rr);
                 f(i,j,k) = c(civ);
                 for (int n = 0; n < nc; ++n) {
-                    ff(i,j,k,n) = cf(civ[0],civ[1],civ[2],n);
+                    ff(i,j,k,n) = cf(AMRCX_IJK(civ),n);
                 }
             }
         });
@@ -563,13 +565,18 @@ AMRComplex::VerifyReport AMRComplex::verify () const
             FaceKey key;
             key[0] = key[1] = key[2] = key[3] = -1;
             int nd = 0;
-            for (int c = 0; c < 4; ++c) {
+            for (int c = 0; c < NFCORNER; ++c) {
                 const long g = cn[FACE[f][c]].gid;
                 bool seen = false;
                 for (int q = 0; q < nd; ++q) { if (key[q]==g) { seen=true; break; } }
                 if (!seen) { key[nd++] = g; }
             }
-            if (nd < 3) { ++degenFaces; continue; }
+            // A face is degenerate once it has collapsed below the dimension
+            // of a face: fewer than 2 distinct nodes in 2D, where a face is an
+            // edge, and fewer than 3 in 3D. Testing against 3 unconditionally
+            // marked every 2D face degenerate and left the whole check
+            // silently inert -- the same defect as a check that never fires.
+            if (nd < AMREX_SPACEDIM) { ++degenFaces; continue; }
             std::sort(key.begin(), key.begin()+nd);
             ++faceCount[key];
             unsigned long long fh = 1469598103934665603ULL;

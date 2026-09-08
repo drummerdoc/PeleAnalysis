@@ -25,7 +25,15 @@ namespace amrcomplex {
 //    level and across the periodic wrap -- no coordinate welding, no epsilon,
 //    and none of the crack and mis-placement failures that follow from it.
 //
-struct Triangle { long v[3]; };
+// One element of the extracted surface: a triangle in 3D, a segment in 2D.
+// Its boundary is correspondingly its 3 edges or its 2 endpoints, and the
+// closure test is the same statement in both -- every boundary item shared by
+// exactly two surface elements.
+struct SurfElement
+{
+    static constexpr int NVERT = AMREX_SPACEDIM;
+    long v[NVERT];
+};
 
 class AMRContour
 {
@@ -50,14 +58,14 @@ public:
         // to exactly one element, which belongs to exactly one rank.
         long nVertices  = 0;
 
-        long nTriangles = 0;
-        long nEdges     = 0;
-        long eulerChar  = 0;     // V - E + F
+        long nElements  = 0;     // triangles in 3D, segments in 2D
+        long nEdges     = 0;     // boundary items: edges in 3D, vertices in 2D
+        long eulerChar  = 0;     // V-E+F in 3D (2 for a sphere); V-E in 2D (0)
 
         // Rank-local, like the face census in AMRComplex: each rank sees only
         // its own triangles, so an edge shared across a rank boundary looks
         // like two boundary edges. Exact at one rank.
-        long edgesInterior = 0;  // incidence 2 -- closed surface
+        long edgesInterior = 0;  // incidence 2 -- closed surface/curve
         long edgesBoundary = 0;  // incidence 1
         long edgesBad      = 0;  // incidence >2 -- non-manifold
 
@@ -83,7 +91,7 @@ public:
     void reportVerify (const Report& r) const;
 
     const amrex::Vector<amrex::RealVect>& vertices () const noexcept { return m_verts; }
-    const amrex::Vector<Triangle>&        triangles () const noexcept { return m_tris; }
+    const amrex::Vector<SurfElement>&    surfElements () const noexcept { return m_tris; }
 
 private:
 
@@ -100,8 +108,11 @@ private:
     // gid is global, not per-level. Nothing depends on index parity, which is
     // what would otherwise fail exactly where two levels meet and the two
     // sides index differently.
-    static int tetrahedralize (const Node (&cn)[Element::NNODE],
-                               int tet[6][4], bool minGidDiagonal);
+    // Split a (possibly degenerate) dual cell into simplices by coning from
+    // its minimum-gid corner: tetrahedra in 3D, triangles in 2D. Returns the
+    // number of non-degenerate simplices.
+    static int simplexify (const Node (&cn)[Element::NNODE],
+                           int simp[6][AMREX_SPACEDIM+1], bool minGidDiagonal);
 
     long edgeVertex (long ga, long gb,
                      const amrex::RealVect& pa, const amrex::RealVect& pb,
@@ -122,7 +133,7 @@ private:
     // in indices. Getting that wrong is what made the first MPI run report an
     // open surface on a closed one.
     amrex::Vector<std::pair<long,long>>  m_vertKey;
-    amrex::Vector<Triangle>              m_tris;
+    amrex::Vector<SurfElement>           m_tris;
     amrex::Real                          m_area = 0;   // summed in element frames
 };
 

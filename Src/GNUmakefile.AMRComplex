@@ -13,7 +13,10 @@
 AMREX_HOME ?= ../../amrex
 
 DEBUG     = FALSE
-DIM       = 3
+
+# 2D and 3D are both supported and both verified. Override on the command
+# line: make -f GNUmakefile.AMRComplex DIM=2
+DIM      ?= 3
 PRECISION = DOUBLE
 COMP      = gnu
 USE_MPI   = FALSE

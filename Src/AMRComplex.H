@@ -101,6 +101,14 @@ struct Element
     long n[NNODE];
 };
 
+// Array4 always takes three indices, even in 2D, so an IntVect cannot be
+// splatted with AMREX_D_DECL. This expands to a valid index triple in both.
+#if (AMREX_SPACEDIM == 2)
+#  define AMRCX_IJK(iv) (iv)[0], (iv)[1], 0
+#else
+#  define AMRCX_IJK(iv) (iv)[0], (iv)[1], (iv)[2]
+#endif
+
 // Corner offsets of the dual cell, VTK_QUAD / VTK_HEXAHEDRON order.
 AMREX_FORCE_INLINE
 amrex::IntVect cornerOffset (int c) noexcept
@@ -248,12 +256,12 @@ public:
                         bool ok = true;
                         for (int c = 0; c < Element::NNODE; ++c) {
                             const amrex::IntVect jv = iv + cornerOffset(c);
-                            const Node& n = a(AMREX_D_DECL(jv[0],jv[1],jv[2]));
+                            const Node& n = a(AMRCX_IJK(jv));
                             if (n.type != Node::VALID) { ok = false; break; }
                             cn[c] = n;
                             for (int m = 0; m < m_ncomp; ++m) {
                                 vals[std::size_t(c)*std::size_t(m_ncomp)+std::size_t(m)]
-                                    = fv(AMREX_D_DECL(jv[0],jv[1],jv[2]),m);
+                                    = fv(AMRCX_IJK(jv),m);
                             }
                         }
                         if (ok) { func(cn, vals.dataPtr()); }

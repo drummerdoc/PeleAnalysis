@@ -41,8 +41,16 @@ int main (int argc, char* argv[])
         int diagRule = 1;
         pp.query("diagonal_rule", diagRule);
         if (diagRule == 0) {
+#if (AMREX_SPACEDIM == 2)
+            Print() << "NOTE: diagonal_rule has no effect in 2D. Two cells "
+                    << "share an EDGE, which has no diagonal, so the "
+                    << "consistency question this control exists to test "
+                    << "does not arise below 3D. The control passing here is "
+                    << "vacuous, not evidence.\n";
+#else
             Print() << "WARNING: using the INCONSISTENT diagonal rule "
                     << "(negative control)\n";
+#endif
         }
         amrcomplex::AMRContour ct(cx, 0, isoVal, diagRule != 0);
         const auto sr = ct.verify();
@@ -56,8 +64,12 @@ int main (int argc, char* argv[])
         Real radius = -1.0;
         pp.query("sphereRadius", radius);
         if (radius > 0) {
+#if (AMREX_SPACEDIM == 2)
+            const Real exact = Real(2.0)*Real(M_PI)*radius;      // circumference
+#else
             const Real exact = Real(4.0)*Real(M_PI)*radius*radius;
-            Print() << "  exact area     : " << exact << "\n";
+#endif
+            Print() << "  exact measure  : " << exact << "\n";
             Print() << "  relative error : " << (sr.area-exact)/exact << "\n";
         }
         Print() << std::endl;
