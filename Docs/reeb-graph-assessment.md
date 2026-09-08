@@ -1343,3 +1343,76 @@ Staging:
 reaction rate, high temperature) or from below. The sweep supports both, and
 the answer may differ per surrogate, so it stays a runtime choice rather than
 a design commitment.
+
+---
+
+## 16. Sweep: built and verified
+
+Stage 1 of §15.4 is done. `Src/AMRSegment.{H,cpp}` and `Src/amrSweep.cpp`, on
+branch `amr-complex`; all suites pass in 2D and 3D at 1-8 ranks.
+
+    amrSweep3d.<comp>.MPI.ex infile=<plt> isoCompName=<field> \
+        vlo=<lo> vhi=<hi> nval=<n> [log=1] [above=0] [min_volume=<v>] \
+        is_per="1 1 0" outfile=<table>
+
+Per threshold: number of connected regions, total volume, largest and median
+component volume, isosurface area.
+
+### 16.1 Verified against closed forms
+
+`makeTestPlt` gained a cellular field, `cos(2 pi k x/L)` summed over
+directions, which on a periodic domain has exactly `k^DIM` maxima and saddles
+between neighbours at a value that can be written down:
+
+| case | above the saddle | below | analytic saddle |
+|---|---|---|---|
+| 3D, k=3 | 27 components | 1 | exactly 1 |
+| 2D, k=3 | 9 components | 1 | exactly 0 |
+
+The maxima sit *on* the domain faces, so finding exactly `k^DIM` is also a
+test that the wrap is in the adjacency rather than assumed. The sphere case
+checks volume and area against closed forms to 0.06% and 0.04%. Counts and
+volumes are unchanged across `max_grid_size` 8/16/32/64 and across a
+three-level hierarchy.
+
+At a threshold sitting exactly on a saddle value the count is genuinely
+ill-defined -- the 3D run reads 20 at `v = 1.000`. That is the degeneracy
+persistence exists to quantify, not a defect.
+
+### 16.2 Two things the tests forced
+
+**Volumes are integer-derived.** Cell volumes take one value per level, so the
+tally counts integers per (component, level) and multiplies at the end. Volume
+is therefore an exact function of integers and bit-identical at any rank
+count. Accumulating reals would have made the primary scientific output move
+in its last bits with the decomposition -- comparable only to a tolerance, and
+avoidable.
+
+**Only shared nodes are exchanged.** The first version published a
+`(gid, root)` pair for every participating node: `O(N)` all-to-all, which
+passes at four ranks on a 64^3 box and fails on real snapshots. Now only
+ghosts, owned nodes on a box boundary, and owned nodes adjacent to a COVERED
+cell -- the last because they may be stamped as coarse parents into a finer
+box's ghost region, and omitting them would fail to join components across a
+coarse-fine interface, silently and only under MPI.
+
+### 16.3 A process note worth keeping
+
+`#ifdef AMREX_USE_MPI` regions are never compiled by a serial build, and no
+MPI is available in the environment used to develop this. A most-vexing-parse
+sat undetected in a gather for exactly that reason. The response was
+structural: `AMRParallel` reduces the conditional region to the MPI calls
+themselves, with every ordinary statement outside the guard and compiled by
+every build. **Guarded regions are untested regions -- keep them minimal.**
+
+### 16.4 Next
+
+Representative snapshots. One file carrying two or three candidate surrogates
+-- heat release rate, temperature, an intermediate -- swept individually, and
+the `N(v)` curves laid side by side. That single run answers whether a plateau
+exists, gives real timings for `ownedBaseRegions` and the segmentation maps at
+production size, and shows whether the surrogates agree, before the merge tree
+is built on an assumption about any of the three.
+
+Real regridded hierarchies will exercise the proper-nesting assertion in a way
+synthetic ones cannot. If it aborts, that is the check working.
