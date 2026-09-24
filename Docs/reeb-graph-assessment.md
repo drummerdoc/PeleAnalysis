@@ -1416,3 +1416,139 @@ is built on an assumption about any of the three.
 
 Real regridded hierarchies will exercise the proper-nesting assertion in a way
 synthetic ones cannot. If it aborts, that is the check working.
+
+---
+
+## 17. First real snapshot: three defects, and the scaling wall
+
+`~/DATA/plt01800`: a 3D flame sheet from PeleLMeX, periodic in x and y, walls
+in z. Four levels, `ref_ratio` 2, about 708M cells (411M on level 3), 180 GB
+on disk. Every refined level spans the full x-y period and reaches down to
+the z = 0 inflow wall. Blocking factor 8, boxes of 16 and 32.
+
+Every synthetic case refined one centred box, which never reaches a periodic
+seam or a wall. The real hierarchy does both at every level, and the volume
+gate failed at two levels. Three defects, each reproduced synthetically and
+closed exactly; commit `01b398a`.
+
+### 17.1 A stitch element owned twice at a periodic seam
+
+On the low side of a refined region a stitch element's base is a ghost cell,
+so no box holds it as valid. `ownedBaseRegions` assigns it with two tests:
+drop it if it is valid through the wrap, else give it to the lowest-indexed
+box that visits it. The first test considered periodic images; the second
+compared raw indices. At a seam the same base is `(-1,j)` to the box at the
+low end and `(n-1,j)` to the box at the high end, so each owned it under its
+own name.
+
+On a 16x16 2D slab the overshoot is exactly one element, area `9/4096`. On
+the snapshot (levels 0-1, all periodic) it was 4048 unmatched faces, every
+one on the x or y seam, and 1122 duplicated elements.
+
+Fix: ownership is decided on one name per base cell, its image inside the
+domain, and a claim is checked against every periodic image of the other
+boxes' regions. The owned region is handed back in the box's own frame,
+because that is where its ghost cells -- and so the element's corners -- are
+read. **Convention 1 now applies to base cells as well as nodes.** Nodes had
+been canonicalised under the wrap; base cells had not, so one element could
+carry two names and ownership was decided per name.
+
+The first diagnosis was wrong and is worth recording: 7488 elements with 7
+distinct corners suggested re-entrant corners of the refined region. An
+L-shaped region closes exactly in 2D and 3D and contains 7-corner elements
+too. They are a legitimate stitch shape at a concave edge.
+
+### 17.2 The nesting assertion exempted ghosts across a periodic face
+
+It examined only ghosts inside the domain. A level that reaches a periodic
+face with no coarser level on the far side leaves its wrapped ghosts INIT,
+and their elements are dropped: a gap one stitch layer thick, silently. The
+snapshot read as periodic in z showed exactly this -- level 2 sits on z = 0
+and wraps onto the top of the domain, where there is no level 1 -- as a
+residual of exactly `5/3072`, the layer between a level-2 and a level-0 node
+row across the full x-y area. Any ghost inside the domain or across a
+periodic face that finds no parent now aborts. That hierarchy is not nested
+for periodic z, which it never was physically, and the check now says so.
+
+### 17.3 The volume reference assumed level 0 at every wall
+
+`expectedVolume` subtracted half a level-0 cell at each wall. With a refined
+level on a wall the complex stops half a *fine* cell from it, and slopes
+between levels where a refined patch on the wall ends. The leading term
+accounted for 99% of the snapshot's residual; the slope is the rest.
+
+The reference is now measured, by the divergence theorem with `F = x_w e_w`
+for a non-periodic direction `w`: the volume of the complex is the flux of
+`F` through its boundary, and a correct complex has no boundary except faces
+lying against a wall. So the reference is that flux summed over exactly those
+faces of every element, each split into the same triangles the volume's
+simplex split puts on it. Faces away from the walls must cancel in pairs, so
+a gap, an overlap, a fold or a face-diagonal disagreement still leaves a
+residual. Fully periodic, the reference is still the domain.
+
+- Reproduces `(15/16)^DIM` on one level with walls, the old closed form, and
+  `1 - 1/256 - 1/64` on a wall-anchored sheet: half a level-2 cell at one
+  wall, half a level-0 cell at the other.
+- **Mutation test.** With 17.1 reinstated in a scratch copy, the walled cases
+  fail by 2.3e-3 (2D) and 5.1e-3 (3D). The first mutant tried did not
+  reproduce the defect at all -- clipping to the domain without the image
+  shifts drops the out-of-domain name outright -- and its PASS meant nothing.
+  A reference measured from the mesh must be shown able to fail.
+- **Blind spot, documented at the code:** an element whose every corner lies
+  against one wall has all its faces counted as wall faces, so its absence
+  moves both sums equally. The face census still sees it.
+
+### 17.4 New synthetic geometry and controls
+
+`makeTestPlt region=`:
+
+| region | shape | exercises |
+|---|---|---|
+| `L` | finest level with the high quadrant removed | re-entrant corner (2D), edge (3D) |
+| `slab` | spans all but the last direction | coarse-fine interfaces meeting the periodic seams |
+| `sheet` | slab on the low wall of the last direction | a refined level on a wall |
+
+`mpi_RE` and `mpi_SL` run in every section of the MPI suite, including the
+fully walled setting. `mpi_SH` has its own section: rank invariance under its
+physical periodicities, and a negative control that must abort on nesting
+when the wall direction is forced periodic.
+
+### 17.5 Verified on the snapshot
+
+x and y periodic, z walls, 64 ranks:
+
+| levels | elements | relative error | verify wall time |
+|---|---|---|---|
+| 0-1 | 47,871,576 | 0 | 3.9 s |
+| 0-2 | 262,139,256 | 0 | 12.5 s |
+
+Both without a carried field. Reading one field adds I/O: the levels 0-2
+sweep spent 189 s building, almost all of it reading `HeatRelease` from the
+180 GB plotfile.
+
+### 17.6 The scaling wall
+
+A levels 0-2 sweep on `HeatRelease` peaked at **89 GB total** after build and
+verify at 64 ranks, about 300 bytes per cell. The full hierarchy is 708M cells
+on a 122 GB machine, so it does not fit. Contributors, by construction:
+
+- `m_elements`, an explicit `Element` per cell: 64 bytes.
+- `Node` (32 bytes) and the field (8 bytes per component) per cell, both with
+  a ghost layer.
+- `verify()`'s face census, a `std::map` over every face instance on the rank.
+- In `AMRSegment`, hash maps and sets per in-set node, and `m_ownedSet` over
+  every owned node.
+
+And the merge: `mergeAcrossRanks` all-gathers every shared node's
+`(gid, root)` to every rank. On level 0 that was 24% of all nodes at the
+lowest threshold; with level-3 boxes averaging about 24^3 it is a similar
+fraction of hundreds of millions, replicated on every rank.
+
+### 17.7 Next
+
+1. **Memory.** Drop the stored element list; make the face census optional
+   outside tests; segmentation containers sized to the in-set nodes only.
+2. **Merge.** Reduce to edges between local components before the global
+   exchange: their number is set by component pieces per box, not by nodes.
+3. **The four-marker sweep** on the full hierarchy: `I_R(H2)`, `temp`,
+   `HeatRelease`, `Y(H2O2)`.
