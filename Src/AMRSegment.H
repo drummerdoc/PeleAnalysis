@@ -32,8 +32,11 @@ public:
 
     // comp indexes the complex's carried components; above selects
     // {f > threshold} rather than {f < threshold}.
+    // keepGhostLabels: also keep the final label of every ghost node this
+    // rank saw -- surface-sized -- so labelAny() can answer for them. Needed
+    // to label a contour, whose triangles can have corners another rank owns.
     AMRSegment (const AMRComplex& cx, int comp, amrex::Real threshold,
-                bool above = true);
+                bool above = true, bool keepGhostLabels = false);
 
     struct Component
     {
@@ -56,6 +59,10 @@ public:
     // Component label of a node this rank owns; -1 if it is not in the
     // threshold set or another rank owns it.
     long label (long gid) const noexcept;
+
+    // As label(), and also for ghost nodes when constructed with
+    // keepGhostLabels; -1 if not in the set or not known here.
+    long labelAny (long gid) const noexcept;
 
 private:
 
@@ -83,6 +90,8 @@ private:
     // all: the gid determines it.
     std::vector<long>             m_parent;
     std::unordered_map<long,long> m_ghostParent;
+    std::unordered_map<long,long> m_ghostLabel;   // kept only on request
+    bool                          m_keepGhostLabels = false;
 
     amrex::Vector<Component> m_comps;
     long                     m_nExchanged = 0;

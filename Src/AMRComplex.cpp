@@ -104,6 +104,7 @@ AMRComplex::AMRComplex (const Params& params)
     : m_params(params)
 {
     PlotFileData pf(m_params.infile);
+    m_time = pf.time();
 
     int finest = pf.finestLevel();
     if (m_params.finestLevel >= 0) {

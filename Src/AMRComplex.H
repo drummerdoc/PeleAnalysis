@@ -247,6 +247,14 @@ public:
     int  gidOwner (long gid) const noexcept;
     const amrex::Geometry& geom (int lev) const noexcept { return m_geom[lev]; }
 
+    // The input hierarchy's own layout, so that per-cell results can be
+    // written as a plotfile on exactly the input's grids.
+    const amrex::BoxArray&            boxArray (int lev) const noexcept { return m_grids[lev]; }
+    const amrex::DistributionMapping& distributionMap (int lev) const noexcept { return m_dmap[lev]; }
+    amrex::IntVect refRatio (int lev) const noexcept { return m_refRatio[lev]; }  // lev -> lev+1
+    const amrex::FabArray<amrex::BaseFab<Node>>& nodes (int lev) const noexcept { return m_nodes[lev]; }
+    amrex::Real time () const noexcept { return m_time; }
+
     // Centre of the cell naming this node, at that node's own level.
     amrex::RealVect nodePosition (const Node& n) const noexcept;
 
@@ -344,6 +352,7 @@ private:
 
     Params                         m_params;
     int                            m_nlev = 0;
+    amrex::Real                    m_time = 0;
     long                           m_nNodesGlobal = 0;
 
     amrex::Vector<amrex::BoxArray>            m_grids;

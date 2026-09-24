@@ -137,6 +137,9 @@ public:
 
     const amrex::Vector<amrex::RealVect>& vertices () const noexcept { return m_verts; }
 
+    // The node-edge each vertex lies on, as (smaller gid, larger gid).
+    const amrex::Vector<std::pair<long,long>>& vertexKeys () const noexcept { return m_vertKey; }
+
     // Interpolated field values carried on the surface, nComp per vertex,
     // vertex-major. Every component is interpolated at the SAME parameter as
     // the position -- the one determined by the isosurface component -- which

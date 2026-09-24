@@ -44,8 +44,18 @@ long AMRSegment::label (long gid) const noexcept
     return (i >= 0) ? m_parent[std::size_t(i)] : -1;
 }
 
-AMRSegment::AMRSegment (const AMRComplex& cx, int comp, Real threshold, bool above)
-    : m_cx(cx), m_comp(comp), m_threshold(threshold), m_above(above)
+long AMRSegment::labelAny (long gid) const noexcept
+{
+    const long i = m_cx.localIndex(gid);
+    if (i >= 0) { return m_parent[std::size_t(i)]; }
+    const auto it = m_ghostLabel.find(gid);
+    return (it != m_ghostLabel.end()) ? it->second : -1;
+}
+
+AMRSegment::AMRSegment (const AMRComplex& cx, int comp, Real threshold, bool above,
+                        bool keepGhostLabels)
+    : m_cx(cx), m_comp(comp), m_threshold(threshold), m_above(above),
+      m_keepGhostLabels(keepGhostLabels)
 {
     AMREX_ALWAYS_ASSERT(comp >= 0 && comp < cx.nComp());
     localUnionFind();
@@ -166,12 +176,19 @@ void AMRSegment::mergeAcrossRanks ()
     // to a gid this rank may hold in neither store. So first collapse every
     // path to its LOCAL root, which is always present, and only then map
     // local roots to global labels.
+    // Ghost labels, if kept, take their local roots now, while every path
+    // is still intact.
+    if (m_keepGhostLabels) {
+        m_ghostLabel.reserve(m_ghostParent.size());
+        for (const auto& kv : m_ghostParent) { m_ghostLabel[kv.first] = findRoot(kv.first); }
+    }
     for (std::size_t i = 0; i < m_parent.size(); ++i) {
         if (m_parent[i] >= 0) { m_parent[i] = findRoot(m_cx.localGid(long(i))); }
     }
     for (std::size_t i = 0; i < m_parent.size(); ++i) {
         if (m_parent[i] >= 0) { m_parent[i] = gfind(m_parent[i]); }
     }
+    for (auto& kv : m_ghostLabel) { kv.second = gfind(kv.second); }
     std::unordered_map<long,long>().swap(m_ghostParent);
 }
 
