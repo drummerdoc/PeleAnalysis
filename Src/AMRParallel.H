@@ -27,6 +27,10 @@ namespace amrcomplex {
 void allGather (amrex::Vector<amrex::Long>& v);
 void allGather (amrex::Vector<amrex::Real>& v);
 
+// Personalised exchange: byRank[p] goes to rank p (byRank has NProcs
+// entries). Returns everything received, concatenated in rank order.
+amrex::Vector<amrex::Long> allToAll (const amrex::Vector<amrex::Vector<amrex::Long>>& byRank);
+
 // Gathers to the IO processor; other ranks are left with an empty vector.
 void gatherToIO (amrex::Vector<amrex::Long>& v);
 void gatherToIO (amrex::Vector<amrex::Real>& v);

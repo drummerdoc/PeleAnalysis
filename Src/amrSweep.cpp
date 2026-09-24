@@ -101,7 +101,7 @@ int main (int argc, char* argv[])
         amrcomplex::AMRComplex cx(p);
         const Real tBuild = elapsedMax(t0);
         t0 = ParallelDescriptor::second();
-        const auto cr = cx.verify();
+        const auto cr = cx.verify(false);   // census off: a map over every face
         if (!cr.passed()) { cx.reportVerify(cr); Abort("complex does not verify"); }
         const Real tVerify = elapsedMax(t0);
 

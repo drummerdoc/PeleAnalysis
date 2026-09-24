@@ -58,6 +58,53 @@ void gatherImpl (Vector<T>& v, bool toIOOnly)
 
 } // anonymous namespace
 
+Vector<Long> allToAll (const Vector<Vector<Long>>& byRank)
+{
+    const int nproc = ParallelDescriptor::NProcs();
+    AMREX_ALWAYS_ASSERT(int(byRank.size()) == nproc);
+
+    Vector<int> scnt, soff, rcnt, roff;
+    scnt.resize(nproc, 0);
+    soff.resize(nproc, 0);
+    rcnt.resize(nproc, 0);
+    roff.resize(nproc, 0);
+    for (int p = 0; p < nproc; ++p) { scnt[p] = int(byRank[p].size()); }
+    for (int p = 1; p < nproc; ++p) { soff[p] = soff[p-1] + scnt[p-1]; }
+
+    Vector<Long> send;
+    send.reserve(std::size_t(soff[nproc-1] + scnt[nproc-1]));
+    for (int p = 0; p < nproc; ++p) {
+        send.insert(send.end(), byRank[p].begin(), byRank[p].end());
+    }
+
+    // Serial, or a single rank: everything sent is to ourselves.
+    rcnt = scnt;
+
+#ifdef AMREX_USE_MPI
+    if (nproc > 1) {
+        MPI_Alltoall(scnt.dataPtr(), 1, MPI_INT, rcnt.dataPtr(), 1, MPI_INT,
+                     ParallelDescriptor::Communicator());
+    }
+#endif
+
+    for (int p = 1; p < nproc; ++p) { roff[p] = roff[p-1] + rcnt[p-1]; }
+    Vector<Long> recv;
+    recv.resize(std::size_t(roff[nproc-1] + rcnt[nproc-1]));
+
+    if (nproc == 1) {
+        recv = send;
+    }
+#ifdef AMREX_USE_MPI
+    else {
+        MPI_Datatype dt = ParallelDescriptor::Mpi_typemap<Long>::type();
+        MPI_Alltoallv(send.dataPtr(), scnt.dataPtr(), soff.dataPtr(), dt,
+                      recv.dataPtr(), rcnt.dataPtr(), roff.dataPtr(), dt,
+                      ParallelDescriptor::Communicator());
+    }
+#endif
+    return recv;
+}
+
 void allGather  (Vector<Long>& v) { gatherImpl(v, false); }
 void allGather  (Vector<Real>& v) { gatherImpl(v, false); }
 void gatherToIO (Vector<Long>& v) { gatherImpl(v, true ); }

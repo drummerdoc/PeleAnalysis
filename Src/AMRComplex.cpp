@@ -136,7 +136,6 @@ AMRComplex::AMRComplex (const Params& params)
 
     numberNodes();    // pure BoxArray bookkeeping; must precede the fill
     classifyNodes(pf);
-    buildElements();
 }
 
 //
@@ -170,6 +169,50 @@ void AMRComplex::numberNodes ()
         m_boxOffset[lev][ba.size()] = running;
         m_levelOffset[lev+1] = m_levelOffset[lev] + running;
     }
+
+    m_localRanges.clear();
+    m_nLocal = 0;
+    const int me = ParallelDescriptor::MyProc();
+    for (int lev = 0; lev < m_nlev; ++lev) {
+        for (int i = 0; i < m_grids[lev].size(); ++i) {
+            if (m_dmap[lev][i] != me) { continue; }
+            const long len = m_boxOffset[lev][i+1] - m_boxOffset[lev][i];
+            m_localRanges.push_back({m_levelOffset[lev] + m_boxOffset[lev][i], m_nLocal, len});
+            m_nLocal += len;
+        }
+    }
+}
+
+long AMRComplex::localIndex (long gid) const noexcept
+{
+    auto it = std::upper_bound(m_localRanges.begin(), m_localRanges.end(), gid,
+                               [] (long g, const LocalRange& r) { return g < r.gidLo; });
+    if (it == m_localRanges.begin()) { return -1; }
+    --it;
+    return (gid < it->gidLo + it->len) ? it->localLo + (gid - it->gidLo) : -1;
+}
+
+long AMRComplex::localGid (long i) const noexcept
+{
+    auto it = std::upper_bound(m_localRanges.begin(), m_localRanges.end(), i,
+                               [] (long x, const LocalRange& r) { return x < r.localLo; });
+    --it;
+    return it->gidLo + (i - it->localLo);
+}
+
+int AMRComplex::gidLevel (long gid) const noexcept
+{
+    const auto it = std::upper_bound(m_levelOffset.begin(), m_levelOffset.end(), gid);
+    return int(it - m_levelOffset.begin()) - 1;
+}
+
+int AMRComplex::gidOwner (long gid) const noexcept
+{
+    const int lev = gidLevel(gid);
+    const auto& bo = m_boxOffset[lev];
+    const long  g  = gid - m_levelOffset[lev];
+    const int   i  = int(std::upper_bound(bo.begin(), bo.end(), g) - bo.begin()) - 1;
+    return m_dmap[lev][i];
 }
 
 void AMRComplex::classifyNodes (PlotFileData& pf)
@@ -520,28 +563,6 @@ Real AMRComplex::expectedVolume () const
 }
 
 
-//
-// One element per valid base cell whose 2^DIM corners are all VALID. Valid
-// boxes partition a level, so every element is produced exactly once by
-// exactly one rank: no global element set, no deduplication, no gather.
-//
-void AMRComplex::buildElements ()
-{
-    m_elements.clear();
-    forEachElement([&] (const Node (&cn)[Element::NNODE], const Real*)
-    {
-        Element e;
-        for (int c = 0; c < Element::NNODE; ++c) { e.n[c] = cn[c].gid; }
-        m_elements.push_back(e);
-    });
-
-    if (m_params.verbose) {
-        Long ne = Long(m_elements.size());
-        ParallelDescriptor::ReduceLongSum(ne);
-        Print() << "AMRComplex: " << ne << " elements" << std::endl;
-    }
-}
-
 RealVect AMRComplex::nodePosition (const Node& n) const noexcept
 {
     const auto plo = m_geom[n.level].ProbLo();
@@ -551,9 +572,10 @@ RealVect AMRComplex::nodePosition (const Node& n) const noexcept
                                  plo[2] + (n.iv[2]+Real(0.5))*dx[2]));
 }
 
-AMRComplex::VerifyReport AMRComplex::verify () const
+AMRComplex::VerifyReport AMRComplex::verify (bool faceCensus) const
 {
     VerifyReport r;
+    r.censusTaken = faceCensus;
 
     const auto problo = m_geom[0].ProbLo();
     const auto probhi = m_geom[0].ProbHi();
@@ -691,7 +713,7 @@ AMRComplex::VerifyReport AMRComplex::verify () const
             // silently inert -- the same defect as a check that never fires.
             if (nd < AMREX_SPACEDIM) { ++degenFaces; continue; }
             std::sort(key.begin(), key.begin()+nd);
-            ++faceCount[key];
+            if (faceCensus) { ++faceCount[key]; }
             unsigned long long fh = 1469598103934665603ULL;
             for (int q = 0; q < nd; ++q) { mixIn(fh, (unsigned long long)(key[q])); }
             facePar ^= fh;
@@ -882,13 +904,17 @@ void AMRComplex::reportVerify (const VerifyReport& r) const
                 << "  (every face shared by exactly two elements)\n";
     }
 
-    Print() << "~ face census (rank-local, exact only at one rank):\n";
-    Print() << "~   interior (incidence 2) : " << r.facesInterior << "\n";
-    Print() << "~   boundary (incidence 1) : " << r.facesBoundary << "\n";
-    Print() << "~   non-manifold (>2)      : " << r.facesBad << "\n";
-    Print() << "~   degenerate (<3 nodes)  : " << r.facesDegenerate << "\n";
-    Print() << "~   face-conforming        : "
-            << (r.faceConforming() ? "yes" : "NO") << "\n";
+    if (r.censusTaken) {
+        Print() << "~ face census (rank-local, exact only at one rank):\n";
+        Print() << "~   interior (incidence 2) : " << r.facesInterior << "\n";
+        Print() << "~   boundary (incidence 1) : " << r.facesBoundary << "\n";
+        Print() << "~   non-manifold (>2)      : " << r.facesBad << "\n";
+        Print() << "~   degenerate (<3 nodes)  : " << r.facesDegenerate << "\n";
+        Print() << "~   face-conforming        : "
+                << (r.faceConforming() ? "yes" : "NO") << "\n";
+    } else {
+        Print() << "~ face census    : not taken\n";
+    }
 
     if (!r.passed()) {
         Print() << "  RESULT: FAIL -- the complex does not tile the domain.\n"

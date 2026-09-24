@@ -9,6 +9,7 @@
 #include <array>
 #include <string>
 #include <algorithm>
+#include <vector>
 
 namespace amrcomplex {
 
@@ -171,6 +172,11 @@ public:
         // on each side and looks like two boundary faces. They are exact in
         // serial and useful for debugging; they are not an MPI invariant and
         // must not be compared across rank counts.
+        // Taken only when verify(true) is asked for; the map it needs holds
+        // every face instance on the rank, which at production size is most of
+        // the verify's memory. faceParity below is the invariant and is
+        // always computed.
+        bool censusTaken   = false;
         long facesInterior = 0;   // incidence 2 -- correct
         long facesBoundary = 0;   // incidence 1 -- domain wall, expected
         long facesBad      = 0;   // incidence >2 -- non-manifold
@@ -208,13 +214,14 @@ public:
 
     explicit AMRComplex (const Params& params);
 
-    // Build stages, in the order they must run. The constructor calls all
-    // three; they are public so each can be exercised on its own in tests.
+    // Build stages, in the order they must run. The constructor calls both;
+    // they are public so each can be exercised on its own in tests.
     void classifyNodes (amrex::PlotFileData& pf);  // VALID/COVERED, periodic id, coarse stamping, field fill
     void numberNodes ();     // BoxArray-index numbering; rank-count independent
-    void buildElements ();   // base cell restricted to the valid box
 
-    VerifyReport verify () const;
+    // faceCensus: also take the rank-local face-incidence census. Useful in
+    // tests and debugging; costs a map over every face instance on the rank.
+    VerifyReport verify (bool faceCensus = true) const;
     void reportVerify (const VerifyReport& r) const;
 
     int nLevels () const noexcept { return m_nlev; }
@@ -224,7 +231,20 @@ public:
     // exactly the same route as the node identity -- see stampCoarseParents.
     const amrex::MultiFab& field (int lev) const noexcept { return m_field[lev]; }
     long nNodesGlobal () const noexcept { return m_nNodesGlobal; }
-    const amrex::Vector<Element>& elements () const noexcept { return m_elements; }
+
+    // Dense numbering of the cells of this rank's boxes, VALID and COVERED
+    // alike, in [0, nLocalCells()). gid is already dense per box, so this is
+    // a range lookup, not a map: consumers can keep per-node state in a plain
+    // array of nLocalCells() instead of a hash map keyed by gid.
+    //   localIndex(gid) -- -1 if another rank owns the gid
+    //   localGid(i)     -- the inverse
+    //   gidLevel(gid)   -- the level of the cell a gid names
+    //   gidOwner(gid)   -- the rank holding that cell's box
+    long nLocalCells () const noexcept { return m_nLocal; }
+    long localIndex (long gid) const noexcept;
+    long localGid (long i) const noexcept;
+    int  gidLevel (long gid) const noexcept;
+    int  gidOwner (long gid) const noexcept;
     const amrex::Geometry& geom (int lev) const noexcept { return m_geom[lev]; }
 
     // Centre of the cell naming this node, at that node's own level.
@@ -235,14 +255,13 @@ public:
     // uncovered cells partition the domain -- so summing them over a set of
     // nodes gives that region's volume with no quadrature.
     //
-    // func(const Node& n, const Real* values, Real cellVolume, bool maybeShared)
-    //   maybeShared marks a node that may appear as a ghost on another rank:
-    //   within one cell of its own box boundary, or adjacent to a COVERED
-    //   cell and therefore liable to be stamped as a coarse parent into some
-    //   finer box's ghost region. A distributed union-find needs to exchange
-    //   exactly these and no others -- exchanging every node instead is O(N)
-    //   all-to-all, which is the difference between a tool that scales and
-    //   one that does not.
+    // func(const Node& n, const Real* values, Real cellVolume)
+    //
+    // There is deliberately no "may another rank see this node" flag. The
+    // distributed union-find once exchanged such nodes, and getting the rule
+    // right took a case that only failed under MPI. It now exchanges ghosts
+    // alone -- the rank that sees a node it does not own is the one that
+    // speaks -- so no such rule has to be stated.
     template <class F>
     void forEachNode (F&& func) const
     {
@@ -255,28 +274,14 @@ public:
                 auto const& a = m_nodes[lev].const_array(mfi);
                 amrex::Array4<const amrex::Real> fv;
                 if (m_ncomp > 0) { fv = m_field[lev].const_array(mfi); }
-                amrex::Box inner = vbx;
-                inner.grow(-1);
                 AMREX_LOOP_3D(vbx, i, j, k,
                 {
                     const Node& n = a(i,j,k);
                     if (n.type != Node::VALID) { continue; }
-                    const amrex::IntVect iv(AMREX_D_DECL(i,j,k));
                     amrex::Real vals[16];
                     for (int c = 0; c < m_ncomp && c < 16; ++c) { vals[c] = fv(i,j,k,c); }
 
-                    bool shared = !inner.contains(iv);
-                    if (!shared) {
-                        for (int kk = -1; kk <= 1 && !shared; ++kk) {
-                        for (int jj = -1; jj <= 1 && !shared; ++jj) {
-                        for (int ii = -1; ii <= 1 && !shared; ++ii) {
-#if (AMREX_SPACEDIM == 2)
-                            if (kk != 0) { continue; }
-#endif
-                            if (a(i+ii,j+jj,k+kk).type == Node::COVERED) { shared = true; }
-                        }}}
-                    }
-                    func(n, vals, cvol, shared);
+                    func(n, vals, cvol);
                 });
             }
         }
@@ -354,7 +359,15 @@ private:
     amrex::Vector<long>                       m_levelOffset;
     amrex::Vector<amrex::Vector<long>>        m_boxOffset;
 
-    amrex::Vector<Element>                    m_elements;   // this rank's share
+    // This rank's boxes as gid ranges, ascending: gids [gidLo, gidLo+len) are
+    // local cells [localLo, localLo+len).
+    struct LocalRange { long gidLo, localLo, len; };
+    std::vector<LocalRange>                   m_localRanges;
+    long                                      m_nLocal = 0;
+
+    // Elements are never stored. forEachElement() generates them from the
+    // node arrays on demand; a stored list was 64 bytes per cell that nothing
+    // read, and at production size (~700M cells) that alone is 45 GB.
 };
 
 } // namespace amrcomplex

@@ -3,7 +3,7 @@
 
 #include "AMRComplex.H"
 #include <unordered_map>
-#include <set>
+#include <vector>
 
 namespace amrcomplex {
 
@@ -49,13 +49,13 @@ public:
     amrex::Real totalVolume () const noexcept;
     long        nNodesTotal () const noexcept;
 
-    // Global number of (gid, root) pairs gathered in mergeAcrossRanks: the
-    // replicated volume the cross-rank merge costs every rank.
+    // Global number of piece-to-piece edges gathered in mergeAcrossRanks: the
+    // one thing the cross-rank merge replicates on every rank.
     long        nExchanged () const noexcept { return m_nExchanged; }
 
-    // Component label for each owned node, keyed by gid; -1 for nodes not in
-    // the threshold set.
-    const std::unordered_map<long,long>& nodeLabels () const noexcept { return m_label; }
+    // Component label of a node this rank owns; -1 if it is not in the
+    // threshold set or another rank owns it.
+    long label (long gid) const noexcept;
 
 private:
 
@@ -68,26 +68,26 @@ private:
     amrex::Real       m_threshold;
     bool              m_above;
 
-    std::unordered_map<long,long> m_parent;   // union-find over gids
-    std::unordered_map<long,long> m_label;    // owned gid -> component label
-    // Owned gid -> the LEVEL of the cell it names, not that cell's volume.
+    // Union-find over gids, in two stores.
     //
-    // Cell volumes take only one value per level, so tallying integer counts
-    // per level and multiplying at the end makes a component's volume an
-    // exact function of integers. Accumulating reals instead would make the
-    // total depend on the order the partial sums were formed, and so on the
-    // rank count -- a scientific output that moves in its last bits when you
-    // change the decomposition is a bad output, and here it is avoidable.
-    std::unordered_map<long,int> m_lev;
-    std::set<long>                       m_ownedSet;
-
-    // Nodes another rank might also see: ghosts here, and owned nodes on a
-    // box boundary or beside a COVERED cell. Only these are exchanged.
-    std::set<long>                       m_shared;
+    // Nodes this rank owns live in a plain array over the complex's dense
+    // local numbering: 8 bytes per local cell, -1 for "not in the set". This
+    // replaced hash maps and sets keyed by gid that cost well over 100 bytes
+    // per in-set node -- tens of GB at production size. After the merge every
+    // owned entry points straight at its root, which is the node's label.
+    //
+    // Nodes another rank owns -- ghosts, and whatever the merge brings in --
+    // live in a hash map. That set is surface-sized, not volume-sized.
+    //
+    // A node's level, needed for the exact volume tally, is not stored at
+    // all: the gid determines it.
+    std::vector<long>             m_parent;
+    std::unordered_map<long,long> m_ghostParent;
 
     amrex::Vector<Component> m_comps;
     long                     m_nExchanged = 0;
 
+    long& parentRef (long g);
     long findRoot (long g);
     void unite (long a, long b);
 };
