@@ -1552,3 +1552,58 @@ fraction of hundreds of millions, replicated on every rank.
    exchange: their number is set by component pieces per box, not by nodes.
 3. **The four-marker sweep** on the full hierarchy: `I_R(H2)`, `temp`,
    `HeatRelease`, `Y(H2O2)`.
+
+---
+
+## 18. Memory and merge: the full hierarchy fits
+
+Commit `346431a`. Section 17.6 predicted the wall; a levels 0-2 sweep of
+`plt01800` confirmed it at 89 GB, and at the lowest threshold -- every node in
+the set -- the segmentation's merge was killed for memory. Four changes, none
+affecting any answer: sweep tables identical to the previous commit in 60
+comparisons across 2D/3D, five hierarchies, two fields, 1/2/4 ranks.
+
+| change | what it removed |
+|---|---|
+| no stored element list | 64 B/cell nothing read; elements are generated on demand, as every consumer already did |
+| `verify(faceCensus=false)` in the sweep | a `std::map` over every face instance; face parity, the invariant, always computed |
+| segmentation on a dense per-rank array | three hash maps and two sets keyed by gid, well over 100 B per in-set node; now 8 B per local cell |
+| routed merge | an all-gather of ~25% of all nodes to every rank |
+
+**The routed merge.** Every cross-rank adjacency is an element with a corner
+another rank owns, which is a ghost on the rank that generated it. So each
+ghost's `(gid, local root)` goes only to the gid's owner (`allToAll`), the
+owner turns it into an edge between two local pieces, duplicates are dropped,
+and only those edges are gathered everywhere. Labels are still the minimum gid
+in each component. This also retired the rule for which owned nodes another
+rank might see -- the covered-neighbour case of 16.2 -- because the rank that
+sees a node it does not own is now the one that speaks.
+
+One defect on the way, caught by the MPI sweep-invariance test and invisible
+at one rank: relabelling in place broke union-find paths running through
+already-relabelled nodes. Relabelling is two passes, local root first.
+
+`AMRComplex` gains a dense numbering of each rank's cells -- `localIndex`,
+`localGid`, `gidLevel`, `gidOwner` -- derived from the box offsets that already
+define gids, so it costs a range lookup, not a map.
+
+### 18.1 Numbers
+
+64 ranks, `HeatRelease`, x and y periodic, z walls:
+
+| | levels 0-2 | levels 0-3 |
+|---|---|---|
+| nodes / elements | 261M / 262M | 621M / 631M |
+| build (mostly reading one field) | 239 s | 446 s |
+| verify | 1.0 s | 2.3 s, exact |
+| peak memory after build | 23 GB (was 89) | 47 GB |
+| worst threshold: edges exchanged / segmentation | 1,988 / 3.9 s | 5,376 / 9.4 s |
+| isosurface area, mid threshold | 3.4 s | 7.6 s |
+| peak memory over the sweep | 30 GB | 83 GB of 122 |
+
+### 18.2 Not yet understood
+
+The sweep adds about 36 GB above the build's peak on the full hierarchy.
+Candidates are the per-rank ghost maps at the lowest threshold and the
+contour's vertex caches; neither has been measured. Reading one field from the
+180 GB plotfile is now most of the wall time.

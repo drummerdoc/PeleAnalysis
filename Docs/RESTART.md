@@ -12,8 +12,8 @@ needs this file, `Docs/reeb-graph-assessment.md`, and the repo.
 
 > I'm continuing work on AMRComplex/AMRContour in ~/src/PeleAnalysis, branch
 > `amr-complex`. Read `Docs/RESTART.md` first, then `Docs/reeb-graph-assessment.md`
-> sections 14 to 17 — the verified state, the target problem, the sweep, and
-> what the first real snapshot exposed. Do not re-derive the earlier sections;
+> sections 14 to 18 — the verified state, the target problem, the sweep, what
+> the first real snapshot exposed, and the memory work that made it fit. Do not re-derive the earlier sections;
 > they are history and several of their conclusions were later corrected in
 > place. Then tell me what you think the next step is before writing any code.
 
@@ -30,8 +30,9 @@ computing one. Section 15 of the assessment has the full statement.
 ## What is built and verified
 
 On `amr-complex`, all suites passing in 2D and 3D at 1–8 ranks, and the
-complex verified exactly on levels 0–2 of a real PeleLMeX flame sheet
-(`~/DATA/plt01800`, 262M elements; assessment §17):
+complex verified exactly on all four levels of a real PeleLMeX flame sheet
+(`~/DATA/plt01800`, 631M elements), which sweeps in 83 GB at 64 ranks
+(assessment §17, §18):
 
 | file | what |
 |---|---|
@@ -98,20 +99,16 @@ on a wall). A centred box exercises none of them.
 
 ## Next
 
-1. **Memory** (§17.6). A levels 0–2 sweep peaked at 89 GB total at 64 ranks,
-   ~300 bytes per cell; the full 708M-cell hierarchy does not fit in 122 GB.
-   Drop the stored element list (64 B/cell), make `verify()`'s face census
-   optional outside tests, size the segmentation containers to in-set nodes.
-2. **Merge.** `mergeAcrossRanks` all-gathers every shared node to every rank.
-   Reduce to edges between local components before the global exchange.
-3. **Representative snapshots.** The four-marker sweep on the full
+1. **Representative snapshots.** The four-marker sweep on the full
    hierarchy of `plt01800`: `I_R(H2)`, `temp`, `HeatRelease`, `Y(H2O2)`,
-   `is_per="1 1 0"`, `N(v)` curves side by side.
-4. Segmentation written as a plotfile (integer label per cell).
-5. **Merge tree** — gated on reproducing `amrSweep`'s `N(v)` exactly at every
+   `is_per="1 1 0"`, `N(v)` curves side by side. `I_R(H2)` is negative where
+   fuel is consumed: sweep it from below (`above=0`), `vhi=0`, `vlo` its
+   minimum.
+2. Segmentation written as a plotfile (integer label per cell).
+3. **Merge tree** — gated on reproducing `amrSweep`'s `N(v)` exactly at every
    sampled threshold.
-6. Overlap matching, serving both time tracking and cross-surrogate comparison.
-7. Boundary invariants for the b1 events (a crescent closing into a ring).
+4. Overlap matching, serving both time tracking and cross-surrogate comparison.
+5. Boundary invariants for the b1 events (a crescent closing into a ring).
 
 Open `[DECIDE]`: whether a cell is thresholded from above or below — may
 differ per surrogate, so it stays a runtime choice.
@@ -122,10 +119,10 @@ stitch band, which needs real geometry.
 
 ## Known limits
 
-- Memory and the all-gather merge, above: the full `plt01800` hierarchy does
-  not fit on the development machine yet.
-- Reading one field from a 180 GB plotfile dominates build time (189 s of it
-  for levels 0–2); verify without a field takes 12.5 s.
+- The full `plt01800` sweep peaks at 83 GB of 122; about 36 GB of that is
+  added during the sweep and not yet attributed (§18.2).
+- Reading one field from the 180 GB plotfile dominates wall time: 446 s of
+  the full-hierarchy build.
 - `writeMEF` gathers to the IO processor. Same wall `isosurface.cpp` has.
 - The walled volume reference cannot see an element whose every corner lies
   on one wall; the face census still does (§17.3).
