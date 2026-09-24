@@ -78,6 +78,25 @@ const int TET[6][4] = {{0,1,2,6},{0,2,3,6},{0,3,7,6},
                        {0,7,4,6},{0,4,5,6},{0,5,1,6}};
 #endif
 
+// The outer facets of that split -- each simplex's facets not shared with
+// another simplex of the same cell -- oriented outward, with the cell face
+// each lies on. The wall-flux reference integrates over exactly these, so
+// it splits every face the way the volume does.
+#if (AMREX_SPACEDIM == 2)
+// Triangles {0,1,2},{0,2,3}, counter-clockwise: their outer edges run
+// 0->1, 1->2, 2->3, 3->0, one per face.
+const int NBFACET = 4;
+const int BFACET[4][2]     = {{0,1},{1,2},{2,3},{3,0}};
+const int BFACET_FACE[4]   = {0, 1, 2, 3};
+#else
+// Tet (0,x,y,6) is positively oriented, so its outward facets are (x,y,6)
+// and (0,y,x) -- the two not containing the diagonal 0-6.
+const int NBFACET = 12;
+const int BFACET[12][3]    = {{1,2,6},{0,2,1}, {2,3,6},{0,3,2}, {3,7,6},{0,7,3},
+                              {7,4,6},{0,4,7}, {4,5,6},{0,5,4}, {5,1,6},{0,1,5}};
+const int BFACET_FACE[12]  = {3,0, 4,0, 4,5, 1,5, 1,2, 3,2};
+#endif
+
 } // anonymous namespace
 
 
@@ -233,9 +252,19 @@ void AMRComplex::classifyNodes (PlotFileData& pf)
         // interface silently leaks volume rather than failing. Catch it at
         // creation instead of explaining a 3% residual later.
         if (lev > 0) {
+            // Ghosts that must have found a parent: those inside the domain,
+            // and those across a periodic face. Only a ghost beyond a wall may
+            // legitimately stay INIT. Checking the domain alone exempted every
+            // wrapped ghost, so a level reaching a periodic face with no
+            // coarser level on the far side left its seam elements INIT and
+            // dropped them -- a gap one stitch layer thick, silently.
+            Box perDom = m_geom[lev].Domain();
+            for (int d = 0; d < AMREX_SPACEDIM; ++d) {
+                if (m_geom[lev].isPeriodic(d)) { perDom.grow(d, 1); }
+            }
             Long badGhosts = 0;
             for (MFIter mfi(m_nodes[lev]); mfi.isValid(); ++mfi) {
-                const Box  gbx = mfi.fabbox() & m_geom[lev].Domain();
+                const Box  gbx = mfi.fabbox() & perDom;
                 const Box& vbx = mfi.validbox();
                 auto const& a  = m_nodes[lev].const_array(mfi);
                 AMREX_LOOP_3D(gbx, i, j, k,
@@ -246,14 +275,15 @@ void AMRComplex::classifyNodes (PlotFileData& pf)
                     // box's cell, and it is perfectly legitimate for that to be
                     // COVERED by the next level up.
                     const Node& n = a(i,j,k);
-                    if (n.level == lev-1 && n.type == Node::COVERED) { ++badGhosts; }
+                    if (n.type == Node::INIT ||
+                        (n.level == lev-1 && n.type == Node::COVERED)) { ++badGhosts; }
                 });
             }
             ParallelDescriptor::ReduceLongSum(badGhosts);
             if (badGhosts > 0) {
                 Abort("AMRComplex: level " + std::to_string(lev) + " has "
                       + std::to_string(badGhosts) + " ghost cells whose parent at "
-                      "level " + std::to_string(lev-1) + " is COVERED. The hierarchy "
+                      "level " + std::to_string(lev-1) + " is COVERED or absent. The hierarchy "
                       "is not properly nested: level " + std::to_string(lev)
                       + " reaches the edge of level " + std::to_string(lev-1)
                       + ", so the coarse-fine stitch has no valid coarse node to "
@@ -404,40 +434,88 @@ BoxList AMRComplex::ownedBaseRegions (int lev, int boxIdx) const
     // Of the genuine stitch bases that survive, a cell is visited by box A
     // exactly when it lies in A's low-grown valid box. The lowest such index
     // owns it; anything claimed by a lower index is not ours.
-    for (const Box& P : remaining) {
-        Box q = P;
-        for (int d = 0; d < AMREX_SPACEDIM; ++d) { q.growHi(d,1); }
-        ba.intersections(q, isects);
-
-        BoxList claimed;
-        for (const auto& pr : isects) {
-            if (pr.first >= boxIdx) { continue; }
-            Box lo = ba[pr.first];
-            for (int d = 0; d < AMREX_SPACEDIM; ++d) { lo.growLo(d,1); }
-            const Box ov = lo & P;
-            if (ov.ok()) { claimed.push_back(ov); }
+    //
+    // That comparison is made on ONE name per base cell: its image inside the
+    // domain. Across a periodic seam the same stitch base is a ghost of two
+    // boxes under two raw indices -- (-1,j) seen from the box at the low end,
+    // (n-1,j) from the box at the high end -- and comparing raw indices let
+    // each box own it under its own name, so the element was generated twice.
+    // The volume overshot by exactly those elements, and only on the low side
+    // of a refined region that reaches a seam: the flame-sheet configuration.
+    // This is convention 1 -- identity is topological, never positional --
+    // applied to base cells as well as nodes.
+    //
+    // Ownership is decided on the canonical name; the owned region is handed
+    // back in this box's own frame, since that is where its ghost cells, and
+    // so the element's corners, are read.
+    const Geometry& geom = m_geom[lev];
+    Vector<IntVect> imageShifts(1, IntVect::TheZeroVector());
+    for (int d = 0; d < AMREX_SPACEDIM; ++d) {
+        if (!geom.isPeriodic(d)) { continue; }
+        const int n = dom.length(d);
+        const int m = imageShifts.size();
+        for (int i = 0; i < m; ++i) {
+            IntVect lo = imageShifts[i], hi = imageShifts[i];
+            lo[d] -= n; hi[d] += n;
+            imageShifts.push_back(lo);
+            imageShifts.push_back(hi);
         }
-        owned.join(amrex::complementIn(P, claimed));
+    }
+
+    // The domain, unbounded in non-periodic directions: a shell cell beyond a
+    // wall has no image to move to, and needs none -- its corners are never
+    // VALID, so it generates nothing either way.
+    Box canonDom = dom;
+    for (int d = 0; d < AMREX_SPACEDIM; ++d) {
+        if (!geom.isPeriodic(d)) {
+            canonDom.setSmall(d, std::numeric_limits<int>::min()/2);
+            canonDom.setBig  (d, std::numeric_limits<int>::max()/2);
+        }
+    }
+
+    for (const Box& P : remaining) {
+        for (const IntVect& s : imageShifts) {
+            // C: the part of P whose canonical name is P shifted by s.
+            const Box C = Box(P).shift(s) & canonDom;
+            if (!C.ok()) { continue; }
+
+            // Box A claims a canonical cell if any image of it lies in A's
+            // low-grown box.
+            BoxList claimed;
+            for (const IntVect& t : imageShifts) {
+                const Box Ct = Box(C).shift(t);
+                Box q = Ct;
+                for (int d = 0; d < AMREX_SPACEDIM; ++d) { q.growHi(d,1); }
+                ba.intersections(q, isects);
+                for (const auto& pr : isects) {
+                    if (pr.first >= boxIdx) { continue; }
+                    Box lo = ba[pr.first];
+                    for (int d = 0; d < AMREX_SPACEDIM; ++d) { lo.growLo(d,1); }
+                    const Box ov = lo & Ct;
+                    if (ov.ok()) { claimed.push_back(Box(ov).shift(-t)); }
+                }
+            }
+
+            BoxList mine = amrex::complementIn(C, claimed);
+            for (Box& b : mine) { b.shift(-s); }
+            owned.join(mine);
+        }
     }
 
     return owned;
 }
 
 //
-// Volume the complex should occupy: the full domain in periodic directions,
-// and the domain less one level-0 cell in non-periodic ones, where
-// cell-centred data leaves the complex inset by dx/2 at each wall.
+// Volume of the domain. This is the reference only when every direction is
+// periodic; with a wall, verify() measures the reference from the wall faces
+// instead -- see there.
 //
 Real AMRComplex::expectedVolume () const
 {
     const auto problo = m_geom[0].ProbLo();
     const auto probhi = m_geom[0].ProbHi();
-    const auto dx0    = m_geom[0].CellSize();
     Real v = 1.0;
-    for (int d = 0; d < AMREX_SPACEDIM; ++d) {
-        const Real L = probhi[d] - problo[d];
-        v *= (m_params.is_per[d] ? L : L - dx0[d]);
-    }
+    for (int d = 0; d < AMREX_SPACEDIM; ++d) { v *= probhi[d] - problo[d]; }
     return v;
 }
 
@@ -481,8 +559,43 @@ AMRComplex::VerifyReport AMRComplex::verify () const
     const auto probhi = m_geom[0].ProbHi();
     RealVect L;
     for (int d = 0; d < AMREX_SPACEDIM; ++d) { L[d] = probhi[d] - problo[d]; }
-    const Real dvol = expectedVolume();
-    r.domainVolume = dvol;
+    // The reference volume.
+    //
+    // Fully periodic, it is the domain. With a wall it is not simply the
+    // domain less half a cell at the wall: the complex stops half a cell from
+    // the wall at whatever level covers the wall there, and slopes between
+    // levels where a refined patch on the wall ends. Assuming level 0
+    // everywhere was exact for every synthetic case -- no refined level ever
+    // reached a wall -- and wrong for the first real one, a flame sheet
+    // refined down to its inflow wall.
+    //
+    // So the reference is measured, by the divergence theorem with
+    // F = x_w e_w for a non-periodic direction w: the volume of a region is
+    // the flux of F out through its boundary, and the boundary of a correct
+    // complex consists only of faces lying against a wall -- every corner in
+    // the first cell layer at a wall, at its own level. Summing the flux over
+    // exactly those faces of every element gives the volume the complex must
+    // have. Faces anywhere else are interior and must cancel in pairs; a gap,
+    // an overlap, a fold or a face-diagonal disagreement leaves flux that does
+    // not cancel, and the residual shows it. Each face is split into the same
+    // triangles the volume's simplex split puts on it, so for a correct
+    // complex the two agree to rounding however the faces bend.
+    //
+    // Blind spot, stated rather than hidden: an element whose every corner
+    // lies against one wall -- a thin wedge where a refined patch on the wall
+    // ends -- has all its faces counted as wall faces, so its absence would
+    // move both sums equally. The face census still sees it.
+    int wdir = -1;
+    for (int d = 0; d < AMREX_SPACEDIM; ++d) {
+        if (!m_params.is_per[d]) { wdir = d; break; }
+    }
+    Real wallSum = 0.0, wallComp = 0.0;
+    auto kahan = [] (Real& sum, Real& comp, Real term) {
+        const Real ky = term - comp;
+        const Real ks = sum + ky;
+        comp = (ks - sum) - ky;
+        sum  = ks;
+    };
 
     // Compensated (Kahan) summation. Naive summation over a few million
     // elements accumulates ~N*eps of relative error -- about 5e-10 at 2e6
@@ -599,6 +712,53 @@ AMRComplex::VerifyReport AMRComplex::verify () const
             }
         }
 
+        if (wdir >= 0) {
+            // Which walls each corner lies against: bit 2d for the low wall
+            // in d, 2d+1 for the high one. A face is a wall face when all its
+            // corners share a bit.
+            unsigned mask[Element::NNODE];
+            for (int c = 0; c < Element::NNODE; ++c) {
+                const Box& dl = m_geom[cn[c].level].Domain();
+                mask[c] = 0u;
+                for (int d = 0; d < AMREX_SPACEDIM; ++d) {
+                    if (m_params.is_per[d]) { continue; }
+                    if (cn[c].iv[d] == dl.smallEnd(d)) { mask[c] |= 1u << (2*d);   }
+                    if (cn[c].iv[d] == dl.bigEnd(d))   { mask[c] |= 1u << (2*d+1); }
+                }
+            }
+            bool onWall[NFACE];
+            for (int f = 0; f < NFACE; ++f) {
+                unsigned m = ~0u;
+                for (int c = 0; c < NFCORNER; ++c) { m &= mask[FACE[f][c]]; }
+                onWall[f] = (m != 0u);
+            }
+            const Real x0 = p0[wdir];
+            for (int b = 0; b < NBFACET; ++b) {
+                if (!onWall[BFACET_FACE[b]]) { continue; }
+#if (AMREX_SPACEDIM == 2)
+                // Edge p->q of a counter-clockwise triangle: outward normal
+                // times length is (dy, -dx).
+                const RealVect& pa = q[BFACET[b][0]];
+                const RealVect& pb = q[BFACET[b][1]];
+                const Real n[2] = { pb[1]-pa[1], -(pb[0]-pa[0]) };
+                const Real xm = x0 + Real(0.5)*(pa[wdir] + pb[wdir]);
+                kahan(wallSum, wallComp, xm * n[wdir]);
+#else
+                // Outward-oriented triangle: area vector (b-a)x(c-a)/2, and
+                // x_w is linear over it, so its mean is the vertex mean.
+                const RealVect& pa = q[BFACET[b][0]];
+                const RealVect& pb = q[BFACET[b][1]];
+                const RealVect& pc = q[BFACET[b][2]];
+                const RealVect e1 = pb - pa, e2 = pc - pa;
+                const Real n[3] = { Real(0.5)*(e1[1]*e2[2]-e1[2]*e2[1]),
+                                    Real(0.5)*(e1[2]*e2[0]-e1[0]*e2[2]),
+                                    Real(0.5)*(e1[0]*e2[1]-e1[1]*e2[0]) };
+                const Real xm = x0 + (pa[wdir] + pb[wdir] + pc[wdir])/Real(3.0);
+                kahan(wallSum, wallComp, xm * n[wdir]);
+#endif
+            }
+        }
+
 #if (AMREX_SPACEDIM == 2)
         {
             const int TRI[2][3] = {{0,1,2},{0,2,3}};
@@ -631,6 +791,9 @@ AMRComplex::VerifyReport AMRComplex::verify () const
 
 
     ParallelDescriptor::ReduceRealSum(volSum);
+    ParallelDescriptor::ReduceRealSum(wallSum);
+    const Real dvol = (wdir < 0) ? expectedVolume() : wallSum;
+    r.domainVolume = dvol;
     ParallelDescriptor::ReduceLongSum(nElt);
     ParallelDescriptor::ReduceLongSum(nNod);
     ParallelDescriptor::ReduceLongSum(nUnfilled);

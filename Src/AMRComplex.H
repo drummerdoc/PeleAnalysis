@@ -333,9 +333,8 @@ private:
     // from the coarser level.
     amrex::BoxList ownedBaseRegions (int lev, int boxIdx) const;
 
-    // Volume the complex should occupy: the full domain in periodic
-    // directions, and the domain less one level-0 cell in non-periodic ones,
-    // where cell-centred data leaves the complex inset by dx/2 at each wall.
+    // Volume of the domain: the reference when every direction is periodic.
+    // With a wall, verify() measures the reference from the wall faces.
     amrex::Real expectedVolume () const;
 
     Params                         m_params;

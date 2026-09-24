@@ -138,9 +138,24 @@ $MPIRUN -n 1 "$MAKEPLT" n_cell=32 nlevels=1              outfile=mpi_L1 > /dev/n
 $MPIRUN -n 1 "$MAKEPLT" n_cell=32 nlevels=2              outfile=mpi_L2 > /dev/null 2>&1
 $MPIRUN -n 1 "$MAKEPLT" n_cell=64 nlevels=3              outfile=mpi_L3 > /dev/null 2>&1
 $MPIRUN -n 1 "$MAKEPLT" n_cell=32 nlevels=2 ref_ratio=4  outfile=mpi_R4 > /dev/null 2>&1
+# Geometry a centred box never produces. mpi_RE: the finest level is L-shaped,
+# so it has a re-entrant corner (2D) or edge (3D). mpi_SL: every refined level
+# spans the domain in all but the last direction -- the flame-sheet layout --
+# so coarse-fine interfaces meet the periodic seams. The first real snapshot
+# failed on exactly this: a stitch base at the seam had two raw names and was
+# owned, and generated, once under each.
+$MPIRUN -n 1 "$MAKEPLT" n_cell=32 nlevels=2 region=L     outfile=mpi_RE > /dev/null 2>&1
+$MPIRUN -n 1 "$MAKEPLT" n_cell=32 nlevels=3 region=slab  outfile=mpi_SL > /dev/null 2>&1
+# mpi_SH: a slab sitting on the low wall of the last direction, as a flame
+# sheet refined down to its inflow is. Every refined level reaches that wall,
+# so the complex stops half a FINE cell from it -- which the old level-0
+# reference got wrong. Not in CASES: with that direction periodic it is not
+# properly nested (the finest level would wrap onto the coarse far side), so
+# the all-periodic sections cannot run it. Section 1b covers it instead.
+$MPIRUN -n 1 "$MAKEPLT" n_cell=32 nlevels=3 region=sheet outfile=mpi_SH > /dev/null 2>&1
 echo
 
-CASES="mpi_L1 mpi_L2 mpi_L3 mpi_R4"
+CASES="mpi_L1 mpi_L2 mpi_L3 mpi_R4 mpi_RE mpi_SL"
 
 # Parallel arrays, not a single string: each periodicity setting contains
 # spaces, so a space-separated list would be split into nonsense.
@@ -186,6 +201,46 @@ for c in $CASES; do
     done
   done
 done
+echo
+
+# --------------------------------------------------------------------------
+# 1b. A refined level on a wall.
+#
+# Rank invariance under the periodicities the sheet actually has -- spanned
+# directions periodic or not, wall direction a wall -- where passing at all
+# requires the measured wall reference. And the negative control: forcing the
+# wall direction periodic must ABORT on nesting. Before the nesting check
+# looked across periodic faces, that case quietly dropped a whole layer of
+# seam elements instead.
+# --------------------------------------------------------------------------
+echo "=== 1b. refined level on a wall ======================================"
+c=mpi_SH
+for idx in 1 2; do
+  tag=${PER_TAG[$idx]}; per=${PER_VAL[$idx]}
+  $MPIRUN -n 1 "$VERIFY" infile=$c is_per="$per" varnames=dist 2>/dev/null \
+      | invariants > "ref_${c}_${tag}.txt"
+  if ! grep -q "PASS" "ref_${c}_${tag}.txt"; then
+      fail "$c per=$per : the 1-rank baseline itself does not pass"
+      continue
+  fi
+  for n in $RANKS; do
+    [ "$n" = "1" ] && continue
+    $MPIRUN -n "$n" "$VERIFY" infile=$c is_per="$per" varnames=dist 2>/dev/null \
+        | invariants > "out_${c}_${tag}_n${n}.txt"
+    if diff -q "ref_${c}_${tag}.txt" "out_${c}_${tag}_n${n}.txt" > /dev/null; then
+        pass "$c per=$per  n=$n"
+    else
+        fail "$c per=$per  n=$n"
+        diff "ref_${c}_${tag}.txt" "out_${c}_${tag}_n${n}.txt" | sed 's/^/        /'
+    fi
+  done
+done
+if $MPIRUN -n 1 "$VERIFY" infile=$c is_per="$ALLPER" varnames=dist 2>&1 \
+       | grep -q "not properly nested"; then
+    pass "$c per=$ALLPER  aborts on nesting (negative control)"
+else
+    fail "$c per=$ALLPER  should abort on nesting across the periodic face"
+fi
 echo
 
 # --------------------------------------------------------------------------

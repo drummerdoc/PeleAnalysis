@@ -47,6 +47,24 @@ int main (int argc, char* argv[])
         Real refine_frac = 0.5;       pp.query("refine_frac", refine_frac);
         int  cell_k = 4;              pp.query("cell_k", cell_k);
 
+        // Shape of the finest level's region. "box" is the centred box every
+        // case used until real data showed it hides a whole class of
+        // geometry: a union of boxes has re-entrant (concave) corners, and a
+        // single box has none. "L" removes the high quadrant in the last two
+        // directions, leaving a re-entrant corner in 2D and a re-entrant edge
+        // along x in 3D. Applied at the finest level only, so the next level
+        // down still nests properly around it. "slab" spans the whole domain
+        // in every direction but the last -- the flame-sheet configuration --
+        // so every refined level meets the periodic seams, which a centred box
+        // never does. "sheet" is a slab that also sits on the low wall of the
+        // last direction, as a flame sheet refined down to its inflow does:
+        // every refined level reaches a wall, and the complex's wall layer is
+        // then half a FINE cell thick there, not half a level-0 cell.
+        std::string region("box");    pp.query("region", region);
+        AMREX_ALWAYS_ASSERT(region == "box" || region == "L" || region == "slab"
+                            || region == "sheet");
+        const bool spans = (region == "slab" || region == "sheet");
+
         AMREX_ALWAYS_ASSERT(nlevels >= 1);
         AMREX_ALWAYS_ASSERT(ref_ratio == 2 || ref_ratio == 4);
 
@@ -93,6 +111,17 @@ int main (int argc, char* argv[])
                 // domain gets an elongated refined region rather than a cube
                 // that may not fit.
                 for (int d = 0; d < AMREX_SPACEDIM; ++d) {
+                    if (spans && d < AMREX_SPACEDIM-1) { continue; }
+                    if (region == "sheet") {
+                        // Anchored at the wall; the high side keeps a buffer
+                        // of at least one blocking factor inside the parent.
+                        int w = std::max(8, (int(refine_frac*fbx.length(d))/8)*8);
+                        w = std::min(w, fbx.length(d) - 8);
+                        fbx.setBig(d, fbx.smallEnd(d) + w - 1);
+                        AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
+                            w >= 8, "refined region shrank away; raise n_cell");
+                        continue;
+                    }
                     int w = int(refine_frac*fbx.length(d));
                     w = std::max(8, (w/8)*8);
                     const int shrink = (fbx.length(d) - w)/2;
@@ -100,7 +129,16 @@ int main (int argc, char* argv[])
                     AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
                         fbx.length(d) >= 8, "refined region shrank away; raise n_cell");
                 }
-                grids[lev].define(fbx);
+                if (region == "L" && lev == nlevels-1) {
+                    Box notch = fbx;
+                    for (int d = AMREX_SPACEDIM-2; d < AMREX_SPACEDIM; ++d) {
+                        const int mid = fbx.smallEnd(d) + ((fbx.length(d)/2)/8)*8;
+                        notch.setSmall(d, mid);
+                    }
+                    grids[lev].define(amrex::boxDiff(fbx, notch));
+                } else {
+                    grids[lev].define(fbx);
+                }
                 prev = fbx;
             }
             grids[lev].maxSize(max_grid_size);
