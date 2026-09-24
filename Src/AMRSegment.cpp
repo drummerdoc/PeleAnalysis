@@ -98,6 +98,7 @@ void AMRSegment::mergeAcrossRanks ()
     }
 
     allGather(pairs);
+    m_nExchanged = long(pairs.size() / 2);
 
     // Every rank replays the same union-find over the same gathered pairs, so
     // all ranks reach identical labels without a broadcast.

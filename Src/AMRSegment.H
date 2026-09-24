@@ -49,6 +49,10 @@ public:
     amrex::Real totalVolume () const noexcept;
     long        nNodesTotal () const noexcept;
 
+    // Global number of (gid, root) pairs gathered in mergeAcrossRanks: the
+    // replicated volume the cross-rank merge costs every rank.
+    long        nExchanged () const noexcept { return m_nExchanged; }
+
     // Component label for each owned node, keyed by gid; -1 for nodes not in
     // the threshold set.
     const std::unordered_map<long,long>& nodeLabels () const noexcept { return m_label; }
@@ -82,6 +86,7 @@ private:
     std::set<long>                       m_shared;
 
     amrex::Vector<Component> m_comps;
+    long                     m_nExchanged = 0;
 
     long findRoot (long g);
     void unite (long a, long b);

@@ -290,7 +290,9 @@ fi
 # --------------------------------------------------------------------------
 if [ -n "$SWEEP" ]; then
 echo "=== 5. sweep invariance =============================================="
-sinv () { grep -E '^ ' | grep -v '^#'; }
+# Columns 1-7 only: threshold through area. The exchanged-pair count and the
+# timings after them depend on the decomposition by design.
+sinv () { grep -E '^ ' | grep -v '^#' | awk '{print $1,$2,$3,$4,$5,$6,$7}'; }
 for c in $CASES; do
   for fld in cells dist; do
     if [ "$fld" = "cells" ]; then LO=2.5; HI=-1.0; else LO=-0.2; HI=0.15; fi
