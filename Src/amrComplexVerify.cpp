@@ -18,6 +18,7 @@ int main (int argc, char* argv[])
         pp.query("verbose", p.verbose);
         pp.query("face_census", p.faceCensus);
         pp.query("report_bad_faces", p.reportBadFaces);
+        pp.query("legacy_ownership", p.legacyOwnership);
         if (p.reportBadFaces > 0) { p.faceCensus = 1; }
 
         // Field components to carry on the nodes, by plotfile variable name.

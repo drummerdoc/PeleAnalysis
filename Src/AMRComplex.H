@@ -156,6 +156,16 @@ public:
         // gap: run a small case at one rank with every direction periodic,
         // where every such face is a defect.
         int                                reportBadFaces = 0;
+
+        // Negative control. Drops the periodic wrap from the base-cell
+        // ownership test, which is exactly the defect corner-order ownership
+        // was introduced to fix: on a torus one base cell has up to 2^DIM
+        // literal indices, and without the wrap every box that sees any one of
+        // them claims it. Set it and a level spanning two periodic directions
+        // must report duplicate elements, a non-zero interior face parity, and
+        // a positive volume residual. A check that cannot be made to fail is
+        // not a check, so the suite sets this and requires the failure.
+        int                                legacyOwnership = 0;
     };
 
     // Report from verify(). This is the gate described in section 9.1(b) of
@@ -199,6 +209,22 @@ public:
         // nonzero, but still the same value at any rank count.
         unsigned long long faceParity = 0;
 
+        // The same XOR, but excluding faces that lie ON a non-periodic wall --
+        // every distinct corner of the face at the domain face of its own
+        // level. Those are the complex's genuine free boundary; every other
+        // face must be shared by an even number of elements. So this must be
+        // exactly zero under ANY periodicity, which makes watertightness
+        // testable on real data where no scalar volume reference is exact:
+        // it needs no reference, no geometry, and O(1) memory, and it catches a
+        // duplicated element too, since a duplicate drives the incidence of
+        // each of its faces odd.
+        unsigned long long faceParityInterior = 0;
+
+        // Elements generated more than once, from the exact census. A
+        // diagnostic for localising an overlap on a small case; the invariant
+        // form of the same statement is faceParityInterior.
+        long duplicateElements = 0;
+
         // VALID nodes still carrying the fill sentinel: the value plumbing
         // has a hole the identity plumbing does not. Must be zero.
         long nodesUnfilled = 0;
@@ -231,7 +257,7 @@ public:
         bool passed (amrex::Real tol = 1.0e-12) const noexcept
             { return std::abs(relError) < tol; }
         bool faceConforming () const noexcept { return facesBad == 0; }
-        bool faceClosed () const noexcept { return faceParity == 0; }
+        bool faceClosed () const noexcept { return faceParityInterior == 0; }
         bool fieldsFilled () const noexcept { return nodesUnfilled == 0; }
     };
 

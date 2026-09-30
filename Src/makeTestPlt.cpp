@@ -29,9 +29,24 @@ namespace {
 // cell draws some of its corners from a same-level neighbour and the rest
 // from the coarser level, and no contact with the domain wall. A real
 // plotfile is made almost entirely of those configurations.
+// Deterministic block selector for refine_shape=random. A hash of the block
+// index, so it depends on neither the rank count nor the iteration order, and
+// the same hierarchy comes back byte for byte on any machine.
+bool keepRandom (int ib, int jb, int kb, amrex::Real fill)
+{
+    unsigned long long h = 1469598103934665603ULL;
+    const int c[3] = {ib, jb, kb};
+    for (int q = 0; q < 3; ++q) {
+        h ^= (unsigned long long)(c[q] + 1024);
+        h *= 1099511628211ULL;
+        h ^= (h >> 29);
+    }
+    return amrex::Real(h % 1000ULL) < amrex::Real(1000.0)*fill;
+}
+
 amrex::BoxList carveRegion (const amrex::BoxList& allowed, int blk,
-                            amrex::Real frac, const std::string& shape,
-                            const std::string& anchor)
+                            amrex::Real frac, amrex::Real fill,
+                            const std::string& shape, const std::string& anchor)
 {
     const Box ab = allowed.minimalBox();
 
@@ -77,6 +92,18 @@ amrex::BoxList carveRegion (const amrex::BoxList& allowed, int blk,
             up = up && (kb >= (nblk[2]+1)/2);
 #endif
             keep = !up;
+        } else if (shape == "random") {
+            // The closest thing to a regridded region: a hash-selected subset
+            // of blocks. With refine_frac=1 the level spans the whole domain,
+            // so it touches both sides of every periodic wall while its
+            // coverage on the two sides is uncorrelated -- the wrap is then a
+            // mixture of same-level and coarse-fine stitches, which is what the
+            // real data has and what a single symmetric patch never produces.
+            int kbb = 0;
+#if (AMREX_SPACEDIM == 3)
+            kbb = kb;
+#endif
+            keep = keepRandom(ib, jb, kbb, fill);
         } else if (shape == "checker") {
             // Punch out every other block in the first two directions. The
             // region stays connected, and each punched block contributes four
@@ -141,12 +168,23 @@ int main (int argc, char* argv[])
 
         // Shape and placement of each refined level. The defaults reproduce
         // the original behaviour exactly: one centred convex box per level.
-        std::string refine_shape("box");
-        pp.query("refine_shape", refine_shape);
-        std::string refine_anchor("center");
-        pp.query("refine_anchor", refine_anchor);
+        // Given per level, coarsest first; the last entry is repeated for any
+        // deeper level. A three-level hierarchy whose level 1 spans the domain
+        // and whose level 2 must stay interior needs two different settings,
+        // and one scalar cannot express that.
+        Vector<std::string> refine_shape(1, "box");
+        if (const int n = pp.countval("refine_shape")) {
+            refine_shape.resize(n);
+            pp.getarr("refine_shape", refine_shape, 0, n);
+        }
+        Vector<std::string> refine_anchor(1, "center");
+        if (const int n = pp.countval("refine_anchor")) {
+            refine_anchor.resize(n);
+            pp.getarr("refine_anchor", refine_anchor, 0, n);
+        }
         int refine_blk = max_grid_size;
         pp.query("refine_blk", refine_blk);
+        Real refine_fill = 0.6;       pp.query("refine_fill", refine_fill);
         AMREX_ALWAYS_ASSERT(refine_blk >= ref_ratio && refine_blk % ref_ratio == 0);
 
         AMREX_ALWAYS_ASSERT(nlevels >= 1);
@@ -193,8 +231,12 @@ int main (int argc, char* argv[])
                 for (const Box& b : core) {
                     allowed.push_back(Box(b).refine(ref_ratio));
                 }
+                const std::string& shp =
+                    refine_shape[std::min(lev-1, int(refine_shape.size())-1)];
+                const std::string& anc =
+                    refine_anchor[std::min(lev-1, int(refine_anchor.size())-1)];
                 BoxList bl = carveRegion(allowed, refine_blk, refine_frac,
-                                         refine_shape, refine_anchor);
+                                         refine_fill, shp, anc);
                 AMREX_ALWAYS_ASSERT_WITH_MESSAGE(!bl.isEmpty(),
                     "refined region carved away to nothing; raise n_cell, "
                     "raise refine_frac, or lower refine_blk");
@@ -282,8 +324,12 @@ int main (int argc, char* argv[])
         Print() << ", domain";
         for (int d = 0; d < AMREX_SPACEDIM; ++d) { Print() << " " << phi[d]; }
         Print() << ", sphere r=" << radius << ", ref_ratio " << ref_ratio << "\n";
-        Print() << "   refine_shape " << refine_shape << ", refine_anchor "
-                << refine_anchor << ", refine_blk " << refine_blk << "\n";
+        Print() << "   refine_shape";
+        for (const auto& t : refine_shape) { Print() << " " << t; }
+        Print() << ", refine_anchor";
+        for (const auto& t : refine_anchor) { Print() << " " << t; }
+        Print() << ", refine_blk " << refine_blk
+                << ", refine_fill " << refine_fill << "\n";
         for (int lev = 0; lev < nlevels; ++lev) {
             const Box& d0 = geom[lev].Domain();
             const Box  bb = grids[lev].minimalBox();

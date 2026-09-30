@@ -20,10 +20,17 @@
 #   of 8 in 3D -- which a single convex box cannot produce at all, and it is
 #   where a step in the coarse-fine interface either tiles or leaks.
 #
-#   contact with the domain wall. A refined level reaching a non-periodic wall
+#   Contact with the domain wall. A refined level reaching a non-periodic wall
 #   makes the complex stop dx_fine/2 short of it rather than dx_coarse/2, and
 #   through the periodic wrap it makes a coarse-fine stitch whose two sides are
 #   at opposite ends of the domain.
+#
+#   A mismatched periodic wrap. A level spanning the domain touches both sides
+#   of a periodic wall, and its coverage on the two sides is uncorrelated, so
+#   the wrap is a mixture of same-level and coarse-fine stitches at different
+#   transverse positions. refine_shape=random with refine_frac=1 makes that on
+#   purpose; it is the regime a regridded doubly-periodic hierarchy is mostly
+#   made of.
 #
 # The gate is run with every direction periodic. That is not a convenience: on
 # a fully periodic domain the union of the complex is the whole domain, so the
@@ -91,21 +98,39 @@ FAIL=0
 pass () { echo "  PASS  $1"; }
 fail () { echo "  FAIL  $1"; FAIL=$((FAIL+1)); }
 
-# Parallel arrays: tag, shape, anchor, levels, base cells. refine_blk is held
-# at 8 so that a 32-cell base has enough blocks for the checker pattern to
-# punch anything out at all.
-TAG=(box_lo   box_hi   lsh_ctr  lsh_lo   chk_ctr  chk_lo   chk_lo_L3 lsh_lo_L3)
-SHP=(box      box      lshape   lshape   checker  checker  checker   lshape)
-ANC=(lo       hi       center   lo       center   lo       lo        lo)
-NLV=(2        2        2        2        2        2        3         3)
-NCL=(32       32       32       32       32       32       48        48)
+# Parallel arrays: tag, shape, anchor, levels, base cells, extent, fill.
+# refine_blk is held at 8 so that a 32-cell base has enough blocks for the
+# patterns to punch anything out at all. shape and anchor may be multi-word,
+# one entry per refined level, and are deliberately left unquoted so ParmParse
+# sees them as lists.
+#
+# rnd_span is the case that matters most: refine_frac=1 makes level 1 span the
+# whole domain, so it touches both sides of every periodic wall while its
+# coverage on the two sides is uncorrelated. The wrap is then a mixture of
+# same-level and coarse-fine stitches at different transverse positions, which
+# is what a regridded doubly-periodic hierarchy actually looks like and what no
+# symmetric patch produces.
+#
+# The three-level cases keep level 2 interior (anchor "... center"). A level
+# that touches a periodic boundary while its parent does not reach the far side
+# of that boundary has no parent across the wrap at all, and that is a hard
+# error rather than a shape to test -- section 3 covers it as a negative
+# control.
+TAG=(box_lo box_hi lsh_ctr lsh_lo  chk_ctr chk_lo  rnd_ctr rnd_span box_lo_L3  rnd_L3          chk_ctr_L3)
+SHP=(box    box    lshape  lshape  checker checker random  random   "box box"  "random random" "checker checker")
+ANC=(lo     hi     center  lo      center  lo      center  lo       "lo center" "lo center"    "center center")
+NLV=(2      2      2       2       2       2       2       2        3          3               3)
+NCL=(32     32     32      32      32      32      32      32       48         48              48)
+FRC=(0.5    0.5    0.5     0.5     0.5     0.5     0.5     1.0      0.5        0.5             0.5)
+FIL=(0.6    0.6    0.6     0.6     0.6     0.6     0.6     0.6      0.6        0.6             0.6)
 
 echo "generating hierarchies..."
 for i in "${!TAG[@]}"; do
     t=${TAG[$i]}
     $MPIRUN -n 1 "$MAKEPLT" n_cell=${NCL[$i]} nlevels=${NLV[$i]} \
         refine_shape=${SHP[$i]} refine_anchor=${ANC[$i]} refine_blk=8 \
-        refine_frac=0.5 outfile=shp_$t > gen_$t.log 2>&1
+        refine_frac=${FRC[$i]} refine_fill=${FIL[$i]} outfile=shp_$t \
+        > gen_$t.log 2>&1
     if [ ! -d "shp_$t" ]; then
         fail "$t : generator failed, see gen_$t.log"
         continue
@@ -125,10 +150,12 @@ for i in "${!TAG[@]}"; do
         face_census=1 > ver_$t.log 2>&1
     if grep -q "RESULT: PASS" ver_$t.log; then
         nm=$(sed -n 's/^~ *non-manifold (>2) *: *//p' ver_$t.log)
-        cl=$(sed -n 's/^  closed complex *: *//p' ver_$t.log)
+        du=$(sed -n 's/^  duplicate elts *: *//p' ver_$t.log | awk '{print $1}')
         if [ "${nm:-0}" != "0" ]; then
             fail "$t : volume closes but $nm non-manifold face(s)"
-        elif [ "${cl:0:3}" = "NO " ] || [ "${cl}" = "NO" ]; then
+        elif [ "${du:-0}" != "0" ]; then
+            fail "$t : volume closes but $du element(s) generated more than once"
+        elif ! grep -q "closed complex : yes" ver_$t.log; then
             fail "$t : volume closes but the complex is not face-closed"
         else
             sh=$(sed -n '/shape histogram/,/^  fields/p' ver_$t.log \
@@ -171,6 +198,73 @@ for i in "${!TAG[@]}"; do
         fi
     done
 done
+echo
+
+# --------------------------------------------------------------------------
+# 3. Negative control: the orphan-ghost abort.
+#
+# A level that touches a periodic boundary while its parent does not reach the
+# far side of that boundary has, across the wrap, a neighbour two or more levels
+# coarser. The stitch spans one level, so that ghost finds no parent at all and
+# every element that would bridge it is silently not generated -- a gap with
+# nothing to indicate it. Until this control existed the code produced exactly
+# that, and the only symptom was a volume residual on real data.
+#
+# So this case must ABORT, and it must abort naming the cause. A run that
+# completes here is the failure.
+# --------------------------------------------------------------------------
+echo "=== 3. negative control: level 2 at a wall its parent does not wrap ===="
+$MPIRUN -n 1 "$MAKEPLT" n_cell=48 nlevels=3 refine_shape=box box \
+    refine_anchor=lo lo refine_blk=8 refine_frac=0.5 outfile=shp_orphan \
+    > gen_orphan.log 2>&1
+if [ ! -d "shp_orphan" ]; then
+    fail "orphan control : generator failed, see gen_orphan.log"
+else
+    $MPIRUN -n 1 "$VERIFY" infile=shp_orphan is_per="$ALLPER" varnames=dist \
+        > ver_orphan.log 2>&1
+    if grep -q "no owner at any level" ver_orphan.log; then
+        pass "orphan control : aborted, and named the cause"
+    elif grep -q "RESULT:" ver_orphan.log; then
+        fail "orphan control : ran to completion instead of aborting"
+        sed -n 's/^~ relative error/        relative error/p' ver_orphan.log
+    else
+        fail "orphan control : failed for some other reason, see ver_orphan.log"
+        tail -3 ver_orphan.log | sed 's/^/        /'
+    fi
+fi
+echo
+
+# --------------------------------------------------------------------------
+# 4. Negative control: the ownership rule without the periodic wrap.
+#
+# Base-cell ownership is corner order -- a base cell belongs to the box holding
+# the lowest-numbered corner offset that lands in the level's footprint, taken
+# modulo the domain. legacy_ownership=1 drops the modulo, which is the defect
+# that rule replaced: on a torus one base cell has up to 2^DIM literal indices,
+# and a level spanning two periodic directions then has each wrap-edge element
+# claimed by every box that can see any one of them.
+#
+# So rnd_span must FAIL with legacy_ownership=1, and fail in all three ways at
+# once: duplicated elements, a non-zero interior face parity, and a POSITIVE
+# volume residual. A check that cannot be made to fail is not a check.
+# --------------------------------------------------------------------------
+echo "=== 4. negative control: ownership without the periodic wrap ==========="
+if [ -d "shp_rnd_span" ]; then
+    $MPIRUN -n 1 "$VERIFY" infile=shp_rnd_span is_per="$ALLPER" varnames=dist \
+        face_census=1 legacy_ownership=1 > ver_legacy.log 2>&1
+    du=$(sed -n 's/^  duplicate elts *: *//p' ver_legacy.log | awk '{print $1}')
+    if grep -q "RESULT: PASS" ver_legacy.log; then
+        fail "legacy control : passed, so the volume gate cannot see the defect"
+    elif [ "${du:-0}" = "0" ]; then
+        fail "legacy control : failed but reported no duplicate elements"
+    elif grep -q "closed complex : yes" ver_legacy.log; then
+        fail "legacy control : failed but reported the complex face-closed"
+    else
+        pass "legacy control : $du duplicates, not face-closed, residual $(sed -n 's/^~ relative error *: *//p' ver_legacy.log)"
+    fi
+else
+    fail "legacy control : shp_rnd_span was never generated"
+fi
 echo
 
 echo "======================================================================="
