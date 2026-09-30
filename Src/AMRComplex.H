@@ -141,6 +141,21 @@ public:
         int                                finestLevel = -1;   // -1 => all
         amrex::Array<int,AMREX_SPACEDIM>   is_per      = {{AMREX_D_DECL(0,0,0)}};
         int                                verbose     = 0;
+
+        // Exact face-incidence census in verify(). It is a std::map keyed on
+        // the face's node set, so it costs one ordered-map insertion per face
+        // per element -- 2e9 of them on a 333M-element hierarchy, which is
+        // minutes and several GB rather than the seconds the rest of verify()
+        // takes. It is also RANK-LOCAL, so it is a debugging aid and never an
+        // invariant; faceParity is the rank-independent form of the same
+        // statement and always runs. Off by default for that reason.
+        int                                faceCensus  = 0;
+
+        // With the census on, print the node identities of up to this many
+        // faces whose incidence is not 2. This is the handle for localising a
+        // gap: run a small case at one rank with every direction periodic,
+        // where every such face is a defect.
+        int                                reportBadFaces = 0;
     };
 
     // Report from verify(). This is the gate described in section 9.1(b) of
@@ -198,6 +213,20 @@ public:
         // propagated field values. They are the actual MPI invariant.
         long nodeChecksum = 0;
         long eltChecksum  = 0;
+
+        // Whether the census above was actually run. Without it the four
+        // face counts are meaningless zeros rather than a clean bill of health,
+        // and the report must say so rather than printing them.
+        bool censusRun = false;
+
+        // Whether the reference volume is exact. It is, in every periodic
+        // direction (the reference is just the domain) and in a non-periodic
+        // one whose wall is adjacent to cells of a single level. Where a wall
+        // carries more than one level the inset varies across it, the union of
+        // the complex is not a box, and the scalar reference is a bound rather
+        // than an identity -- in which case the residual is not a gate and the
+        // report says so instead of reporting FAIL.
+        bool referenceExact = true;
 
         bool passed (amrex::Real tol = 1.0e-12) const noexcept
             { return std::abs(relError) < tol; }
@@ -336,7 +365,7 @@ private:
     // Volume the complex should occupy: the full domain in periodic
     // directions, and the domain less one level-0 cell in non-periodic ones,
     // where cell-centred data leaves the complex inset by dx/2 at each wall.
-    amrex::Real expectedVolume () const;
+    amrex::Real expectedVolume (bool* exact = nullptr) const;
 
     Params                         m_params;
     int                            m_nlev = 0;

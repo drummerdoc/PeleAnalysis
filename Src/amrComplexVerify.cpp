@@ -16,6 +16,9 @@ int main (int argc, char* argv[])
         pp.get("infile", p.infile);
         pp.query("finestLevel", p.finestLevel);
         pp.query("verbose", p.verbose);
+        pp.query("face_census", p.faceCensus);
+        pp.query("report_bad_faces", p.reportBadFaces);
+        if (p.reportBadFaces > 0) { p.faceCensus = 1; }
 
         // Field components to carry on the nodes, by plotfile variable name.
         if (const int nv = pp.countval("varnames")) {

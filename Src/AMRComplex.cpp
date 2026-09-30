@@ -428,16 +428,63 @@ BoxList AMRComplex::ownedBaseRegions (int lev, int boxIdx) const
 // and the domain less one level-0 cell in non-periodic ones, where
 // cell-centred data leaves the complex inset by dx/2 at each wall.
 //
-Real AMRComplex::expectedVolume () const
+Real AMRComplex::expectedVolume (bool* exact) const
 {
     const auto problo = m_geom[0].ProbLo();
     const auto probhi = m_geom[0].ProbHi();
-    const auto dx0    = m_geom[0].CellSize();
+
+    // Which levels own a cell adjacent to each non-periodic wall. The complex
+    // stops half a cell short of the wall, and that half cell belongs to
+    // whichever level is VALID there -- not necessarily level 0. A regridded
+    // hierarchy refines right up to an inflow or outflow boundary, and
+    // assuming level 0 there understates the reference and turns a correct
+    // complex into a positive residual, which is the opposite of every other
+    // failure mode and so reads as an overlap.
+    Vector<Long> wall(2*AMREX_SPACEDIM*std::max(m_nlev,1), 0L);
+    for (int lev = 0; lev < m_nlev; ++lev) {
+        const Box& dom = m_geom[lev].Domain();
+        for (MFIter mfi(m_nodes[lev]); mfi.isValid(); ++mfi) {
+            const Box& vbx = mfi.validbox();
+            auto const& a  = m_nodes[lev].const_array(mfi);
+            for (int d = 0; d < AMREX_SPACEDIM; ++d) {
+                if (m_params.is_per[d]) { continue; }
+                for (int side = 0; side < 2; ++side) {
+                    const int w = (side == 0 ? dom.smallEnd(d) : dom.bigEnd(d));
+                    if (vbx.smallEnd(d) > w || vbx.bigEnd(d) < w) { continue; }
+                    Box sl = vbx;
+                    sl.setSmall(d,w);
+                    sl.setBig(d,w);
+                    Long cnt = 0;
+                    AMREX_LOOP_3D(sl, i, j, k,
+                    {
+                        if (a(i,j,k).type == Node::VALID) { ++cnt; }
+                    });
+                    wall[(d*2+side)*m_nlev+lev] += cnt;
+                }
+            }
+        }
+    }
+    if (wall.size() > 0) {
+        ParallelDescriptor::ReduceLongSum(wall.dataPtr(), int(wall.size()));
+    }
+
+    bool ex = true;
     Real v = 1.0;
     for (int d = 0; d < AMREX_SPACEDIM; ++d) {
         const Real L = probhi[d] - problo[d];
-        v *= (m_params.is_per[d] ? L : L - dx0[d]);
+        if (m_params.is_per[d]) { v *= L; continue; }
+        Real t = 0.0;
+        for (int side = 0; side < 2; ++side) {
+            int nl = 0, which = 0;
+            for (int lev = 0; lev < m_nlev; ++lev) {
+                if (wall[(d*2+side)*m_nlev+lev] > 0) { ++nl; which = lev; }
+            }
+            if (nl > 1) { ex = false; }
+            t += Real(0.5)*m_geom[which].CellSize(d);
+        }
+        v *= (L - t);
     }
+    if (exact) { *exact = ex; }
     return v;
 }
 
@@ -481,8 +528,10 @@ AMRComplex::VerifyReport AMRComplex::verify () const
     const auto probhi = m_geom[0].ProbHi();
     RealVect L;
     for (int d = 0; d < AMREX_SPACEDIM; ++d) { L[d] = probhi[d] - problo[d]; }
-    const Real dvol = expectedVolume();
-    r.domainVolume = dvol;
+    bool refExact = true;
+    const Real dvol = expectedVolume(&refExact);
+    r.domainVolume    = dvol;
+    r.referenceExact  = refExact;
 
     // Compensated (Kahan) summation. Naive summation over a few million
     // elements accumulates ~N*eps of relative error -- about 5e-10 at 2e6
@@ -495,6 +544,7 @@ AMRComplex::VerifyReport AMRComplex::verify () const
     Long nodeSum = 0, eltSum = 0;
     unsigned long long facePar = 0ULL;
     std::map<FaceKey,int> faceCount;
+    const bool doCensus = (m_params.faceCensus != 0);
     Vector<Long> shape(Element::NNODE+1, 0);
 
     for (int lev = 0; lev < m_nlev; ++lev) {
@@ -578,7 +628,7 @@ AMRComplex::VerifyReport AMRComplex::verify () const
             // silently inert -- the same defect as a check that never fires.
             if (nd < AMREX_SPACEDIM) { ++degenFaces; continue; }
             std::sort(key.begin(), key.begin()+nd);
-            ++faceCount[key];
+            if (doCensus) { ++faceCount[key]; }
             unsigned long long fh = 1469598103934665603ULL;
             for (int q = 0; q < nd; ++q) { mixIn(fh, (unsigned long long)(key[q])); }
             facePar ^= fh;
@@ -638,12 +688,57 @@ AMRComplex::VerifyReport AMRComplex::verify () const
     ParallelDescriptor::ReduceLongSum(eltSum);
     ParallelDescriptor::ReduceLongSum(shape.dataPtr(), shape.size());
 
-    for (const auto& fc : faceCount) {
-        if      (fc.second == 1) { ++r.facesBoundary; }
-        else if (fc.second == 2) { ++r.facesInterior; }
-        else                     { ++r.facesBad; }
+    if (doCensus) {
+        for (const auto& fc : faceCount) {
+            if      (fc.second == 1) { ++r.facesBoundary; }
+            else if (fc.second == 2) { ++r.facesInterior; }
+            else                     { ++r.facesBad; }
+        }
+        r.censusRun = true;
     }
     r.facesDegenerate = degenFaces;
+
+    // Localisation. A second pass rather than bookkeeping in the first: the
+    // incidence of a face is not known until every element has been seen, so
+    // there is nothing useful to record the first time through.
+    if (doCensus && m_params.reportBadFaces > 0) {
+        int shown = 0;
+        forEachElement([&] (const Node (&cn)[Element::NNODE], const amrex::Real*)
+        {
+            if (shown >= m_params.reportBadFaces) { return; }
+            for (int f = 0; f < NFACE; ++f) {
+                if (shown >= m_params.reportBadFaces) { return; }
+                FaceKey key;
+                key[0] = key[1] = key[2] = key[3] = -1;
+                int nd = 0;
+                for (int c = 0; c < NFCORNER; ++c) {
+                    const long g = cn[FACE[f][c]].gid;
+                    bool seen = false;
+                    for (int q = 0; q < nd; ++q) { if (key[q]==g) { seen=true; break; } }
+                    if (!seen) { key[nd++] = g; }
+                }
+                if (nd < AMREX_SPACEDIM) { continue; }
+                std::sort(key.begin(), key.begin()+nd);
+                const auto it = faceCount.find(key);
+                if (it == faceCount.end() || it->second == 2) { continue; }
+                ++shown;
+                AllPrint() << "~ face incidence " << it->second << " (face " << f
+                           << " of element, corners L:level/index)\n~   face   :";
+                for (int c = 0; c < NFCORNER; ++c) {
+                    const Node& n = cn[FACE[f][c]];
+                    AllPrint() << " L" << n.level << ":"
+                               << AMREX_D_TERM(n.iv[0], << "," << n.iv[1], << "," << n.iv[2]);
+                }
+                AllPrint() << "\n~   element:";
+                for (int c = 0; c < Element::NNODE; ++c) {
+                    const Node& n = cn[c];
+                    AllPrint() << " L" << n.level << ":"
+                               << AMREX_D_TERM(n.iv[0], << "," << n.iv[1], << "," << n.iv[2]);
+                }
+                AllPrint() << "\n";
+            }
+        });
+    }
 
     // XOR is associative and commutative, so this is independent of both the
     // visit order and the distribution -- unlike the incidence census above,
@@ -719,15 +814,33 @@ void AMRComplex::reportVerify (const VerifyReport& r) const
                 << "  (every face shared by exactly two elements)\n";
     }
 
-    Print() << "~ face census (rank-local, exact only at one rank):\n";
-    Print() << "~   interior (incidence 2) : " << r.facesInterior << "\n";
-    Print() << "~   boundary (incidence 1) : " << r.facesBoundary << "\n";
-    Print() << "~   non-manifold (>2)      : " << r.facesBad << "\n";
-    Print() << "~   degenerate (<3 nodes)  : " << r.facesDegenerate << "\n";
-    Print() << "~   face-conforming        : "
-            << (r.faceConforming() ? "yes" : "NO") << "\n";
+    if (r.censusRun) {
+        Print() << "~ face census (rank-local, exact only at one rank):\n";
+        Print() << "~   interior (incidence 2) : " << r.facesInterior << "\n";
+        Print() << "~   boundary (incidence 1) : " << r.facesBoundary << "\n";
+        Print() << "~   non-manifold (>2)      : " << r.facesBad << "\n";
+        Print() << "~   degenerate (<3 nodes)  : " << r.facesDegenerate << "\n";
+        Print() << "~   face-conforming        : "
+                << (r.faceConforming() ? "yes" : "NO") << "\n";
+    } else {
+        Print() << "~ face census        : not run (face_census=1 to enable; it is\n"
+                << "~                       an ordered-map pass over every face of every\n"
+                << "~                       element, and rank-local rather than an\n"
+                << "~                       invariant -- checksum faces above is the\n"
+                << "~                       rank-independent form and always runs)\n";
+        Print() << "~   degenerate (<3 nodes)  : " << r.facesDegenerate << "\n";
+    }
 
-    if (!r.passed()) {
+    if (!r.referenceExact && !r.passed()) {
+        Print() << "  RESULT: NOT APPLICABLE -- a non-periodic wall is adjacent to\n"
+                << "    cells of more than one level, so the complex stops a different\n"
+                << "    distance short of the wall in different places, its union is\n"
+                << "    not a box, and the scalar reference above is a bound rather\n"
+                << "    than an identity. Re-run with is_per=1 in every direction: the\n"
+                << "    reference is then exactly the domain volume and the residual is\n"
+                << "    a sharp gate. The complex itself is built topologically and does\n"
+                << "    not change with is_per except in the wrap identification.\n";
+    } else if (!r.passed()) {
         Print() << "  RESULT: FAIL -- the complex does not tile the domain.\n"
                 << "    A non-zero residual is either a genuine gap or overlap at a\n"
                 << "    coarse-fine interface, or a face-diagonal inconsistency between\n"
