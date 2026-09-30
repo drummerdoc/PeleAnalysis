@@ -166,6 +166,16 @@ public:
         // a positive volume residual. A check that cannot be made to fail is
         // not a check, so the suite sets this and requires the failure.
         int                                legacyOwnership = 0;
+
+        // Negative control. Stops the coarse-parent stitch after one level,
+        // which is what it used to do. Proper nesting guarantees a parent at
+        // lev-1 only inside the domain; across a periodic wrap the neighbour is
+        // whatever is on the far face, and a level refined at one end of a
+        // direction whose far end is left coarse has no lev-1 parent there at
+        // all. Set it and such a hierarchy must show a NEGATIVE residual and a
+        // non-zero interior face parity, because the bridging elements are not
+        // generated.
+        int                                singleLevelStamp = 0;
     };
 
     // Report from verify(). This is the gate described in section 9.1(b) of

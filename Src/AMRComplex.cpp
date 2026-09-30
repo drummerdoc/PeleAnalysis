@@ -251,7 +251,7 @@ void AMRComplex::classifyNodes (PlotFileData& pf)
                     // A ghost carrying a node of this level is a neighbouring
                     // box's cell, and it is perfectly legitimate for that to be
                     // COVERED by the next level up.
-                    if (n.level == lev-1 && n.type == Node::COVERED) { ++badGhosts; }
+                    if (n.level < lev && n.type == Node::COVERED) { ++badGhosts; }
 
                     // A ghost still INIT after both propagation steps has no
                     // owner anywhere in the hierarchy. That is legitimate only
@@ -283,7 +283,7 @@ void AMRComplex::classifyNodes (PlotFileData& pf)
             if (badGhosts > 0) {
                 Abort("AMRComplex: level " + std::to_string(lev) + " has "
                       + std::to_string(badGhosts) + " ghost cells whose parent at "
-                      "level " + std::to_string(lev-1) + " is COVERED. The hierarchy "
+                      "a coarser level is COVERED. The hierarchy "
                       "is not properly nested: level " + std::to_string(lev)
                       + " reaches the edge of level " + std::to_string(lev-1)
                       + ", so the coarse-fine stitch has no valid coarse node to "
@@ -300,17 +300,20 @@ void AMRComplex::classifyNodes (PlotFileData& pf)
                 Abort("AMRComplex: level " + std::to_string(lev) + " has "
                       + std::to_string(orphans) + " ghost cells inside the "
                       "periodically-extended domain with no owner at any level. "
-                      "The stitch spans one level, so a ghost must find a parent "
-                      "at level " + std::to_string(lev-1) + "; these found none, "
-                      "and the elements that would bridge them are simply not "
-                      "generated -- a silent gap, which is why this aborts rather "
-                      "than warns. The usual cause is is_per declaring a direction "
-                      "periodic in which the grids do not wrap: level "
-                      + std::to_string(lev) + " touches that boundary while level "
-                      + std::to_string(lev-1) + " does not reach the far side of "
-                      "it, so across the wrap the neighbour is two or more levels "
-                      "coarser. Use the physical periodicity, or coarsen the test "
-                      "with finestLevel until every level wraps.");
+                      "The stitch walks up every level to level 0, which covers "
+                      "the whole domain, so this should be unreachable: a ghost "
+                      "inside the domain always has a level-0 parent. Reaching it "
+                      "means the plotfile's level 0 does not cover its own domain, "
+                      "or the levels are not a refinement of one another. The "
+                      "elements that would bridge these ghosts are simply not "
+                      "generated, which is a silent gap, so this aborts rather "
+                      "than warns."
+                      + std::string(m_params.singleLevelStamp
+                          ? " single_level_stamp is set, which stops the stitch "
+                            "after one level: if that was deliberate, this abort "
+                            "IS the expected result and the negative control has "
+                            "done its job."
+                          : ""));
             }
         }
     }
@@ -325,56 +328,104 @@ void AMRComplex::classifyNodes (PlotFileData& pf)
 //
 void AMRComplex::stampCoarseParents (int lev)
 {
-    const IntVect rr = m_refRatio[lev-1];
+    // Walk up the levels, not just one. The stitch was written as if a fine
+    // ghost always has a parent at lev-1, which is what proper nesting
+    // guarantees INSIDE the domain -- and only inside it. Across a periodic
+    // wrap the neighbour is whatever happens to be on the far face, and there
+    // is no nesting rule relating the two. A doubly periodic flamesheet
+    // refines to level 3 at the flame and leaves the far end of the third
+    // direction at level 1 or 0, so a level-2 ghost wrapping onto that face
+    // finds no level-1 cell at all. There is nothing wrong with that
+    // hierarchy; the stitch was simply too narrow. Falling through to the next
+    // coarser level costs one extra pass, only over ghosts still unresolved,
+    // and the element it produces is a degenerate hexahedron exactly like any
+    // other -- a block of ratio^DIM fine positions resolving to one coarse
+    // node is the whole mechanism, and it does not care whether ratio is 2 or
+    // 4 or 8.
+    IntVect rr(AMREX_D_DECL(1,1,1));
 
-    // Parents of the fine ghost ring: coarsen the level's boxes, then grow by
-    // one coarse cell, which certainly covers them.
-    BoxArray cgba = BoxArray(m_grids[lev]).coarsen(rr);
-    cgba.grow(1);
+    for (int src = lev-1; src >= 0; --src) {
+        rr *= m_refRatio[src];
 
-    FabArray<BaseFab<Node>> cnodes(cgba, m_dmap[lev], 1, 0);
-    MultiFab cfield;
-    if (m_ncomp > 0) {
-        cfield.define(cgba, m_dmap[lev], m_ncomp, 0);
-        cfield.setVal(FIELD_SENTINEL);
-        cfield.ParallelCopy(m_field[lev-1], 0, 0, m_ncomp, IntVect(0), IntVect(0),
-                            m_geom[lev-1].periodicity());
-    }
+        // Only ghosts that nothing has claimed yet. Counted globally, because
+        // the copies below are collective and every rank must agree on whether
+        // this pass happens at all.
+        Long unresolved = 0;
+        for (MFIter mfi(m_nodes[lev]); mfi.isValid(); ++mfi) {
+            const Box  gbx = mfi.fabbox();
+            const Box& vbx = mfi.validbox();
+            auto const& f  = m_nodes[lev].const_array(mfi);
+            AMREX_LOOP_3D(gbx, i, j, k,
+            {
+                if (vbx.contains(IntVect(AMREX_D_DECL(i,j,k)))) { continue; }
+                if (f(i,j,k).type == Node::INIT) { ++unresolved; }
+            });
+        }
+        ParallelDescriptor::ReduceLongSum(unresolved);
+        if (unresolved == 0) { break; }
+        if (m_params.singleLevelStamp && src < lev-1) { break; }
 
-    for (MFIter mfi(cnodes); mfi.isValid(); ++mfi) {
-        const Box& bx = mfi.validbox();
-        auto const& a = cnodes.array(mfi);
-        AMREX_LOOP_3D(bx, i, j, k,
-        {
-            a(i,j,k) = makeNode(lev-1, IntVect(AMREX_D_DECL(i,j,k)), Node::INIT);
-        });
-    }
+        // Parents of the fine ghost ring: coarsen the level's boxes to the
+        // source level, then grow by one source cell, which certainly covers
+        // them -- coarsen(V.grow(1)) is contained in coarsen(V).grow(1) at any
+        // ratio.
+        BoxArray cgba = BoxArray(m_grids[lev]).coarsen(rr);
+        cgba.grow(1);
 
-    cnodes.ParallelCopy(m_nodes[lev-1], 0, 0, 1, IntVect(0), IntVect(0),
-                        m_geom[lev-1].periodicity());
+        FabArray<BaseFab<Node>> cnodes(cgba, m_dmap[lev], 1, 0);
+        MultiFab cfield;
+        if (m_ncomp > 0) {
+            cfield.define(cgba, m_dmap[lev], m_ncomp, 0);
+            cfield.setVal(FIELD_SENTINEL);
+            cfield.ParallelCopy(m_field[src], 0, 0, m_ncomp, IntVect(0), IntVect(0),
+                                m_geom[src].periodicity());
+        }
 
-    // Identity and value are stamped in the same pass, under the same test.
-    // Two separate loops would be two chances for a stitch node's value and
-    // its identity to disagree, and nothing downstream would notice.
-    for (MFIter mfi(m_nodes[lev]); mfi.isValid(); ++mfi) {
-        const Box& gbx = mfi.fabbox();
-        auto const& f  = m_nodes[lev].array(mfi);
-        auto const& c  = cnodes.const_array(mfi);
-        const int nc   = m_ncomp;
-        Array4<Real> ff, cf;
-        if (nc > 0) { ff = m_field[lev].array(mfi); cf = cfield.array(mfi); }
-        AMREX_LOOP_3D(gbx, i, j, k,
-        {
-            if (f(i,j,k).type == Node::INIT) {
-                const IntVect civ = amrex::coarsen(IntVect(AMREX_D_DECL(i,j,k)), rr);
-                f(i,j,k) = c(civ);
-                for (int n = 0; n < nc; ++n) {
-                    ff(i,j,k,n) = cf(AMRCX_IJK(civ),n);
+        for (MFIter mfi(cnodes); mfi.isValid(); ++mfi) {
+            const Box& bx = mfi.validbox();
+            auto const& a = cnodes.array(mfi);
+            AMREX_LOOP_3D(bx, i, j, k,
+            {
+                a(i,j,k) = makeNode(src, IntVect(AMREX_D_DECL(i,j,k)), Node::INIT);
+            });
+        }
+
+        cnodes.ParallelCopy(m_nodes[src], 0, 0, 1, IntVect(0), IntVect(0),
+                            m_geom[src].periodicity());
+
+        // Identity and value are stamped in the same pass, under the same test.
+        // Two separate loops would be two chances for a stitch node's value and
+        // its identity to disagree, and nothing downstream would notice.
+        //
+        // A source cell that is itself INIT is not there at all -- outside this
+        // level's BoxArray -- so the ghost is left unresolved for the next pass
+        // up. A COVERED source IS stamped, deliberately: it means the source
+        // level is refined where this ghost needs a parent, which is a nesting
+        // error rather than a missing level, and stamping it is what lets the
+        // check in classifyNodes name it precisely instead of reporting the
+        // generic "no owner anywhere" further down.
+        for (MFIter mfi(m_nodes[lev]); mfi.isValid(); ++mfi) {
+            const Box& gbx = mfi.fabbox();
+            auto const& f  = m_nodes[lev].array(mfi);
+            auto const& c  = cnodes.const_array(mfi);
+            const int nc   = m_ncomp;
+            Array4<Real> ff, cf;
+            if (nc > 0) { ff = m_field[lev].array(mfi); cf = cfield.array(mfi); }
+            AMREX_LOOP_3D(gbx, i, j, k,
+            {
+                if (f(i,j,k).type == Node::INIT) {
+                    const IntVect civ = amrex::coarsen(IntVect(AMREX_D_DECL(i,j,k)), rr);
+                    if (c(civ).type == Node::INIT) { continue; }
+                    f(i,j,k) = c(civ);
+                    for (int n = 0; n < nc; ++n) {
+                        ff(i,j,k,n) = cf(AMRCX_IJK(civ),n);
+                    }
                 }
-            }
-        });
+            });
+        }
     }
 }
+
 
 //
 // Ownership of elements, by base-cell region.

@@ -52,6 +52,12 @@
 #   DIM=2 Tools/amrComplexShapeTest.sh
 #   RANKS="1 4" MPIRUN="mpirun --oversubscribe" Tools/amrComplexShapeTest.sh
 #
+#   A level jump across a wrap. A level refined against a periodic boundary
+#   whose parent stops short of the far side has, across that wrap, a neighbour
+#   two levels coarser. Proper nesting does not forbid it and says nothing about
+#   it: it constrains a level against its parent inside the domain, and the far
+#   face of a periodic direction is not inside anything.
+#
 # On failure the script re-runs the failing case at one rank with
 # report_bad_faces=8, which prints the level and index of the corners of the
 # first few faces whose incidence is not two. At one rank on a fully periodic
@@ -116,13 +122,13 @@ fail () { echo "  FAIL  $1"; FAIL=$((FAIL+1)); }
 # of that boundary has no parent across the wrap at all, and that is a hard
 # error rather than a shape to test -- section 3 covers it as a negative
 # control.
-TAG=(box_lo box_hi lsh_ctr lsh_lo  chk_ctr chk_lo  rnd_ctr rnd_span box_lo_L3  rnd_L3          chk_ctr_L3)
-SHP=(box    box    lshape  lshape  checker checker random  random   "box box"  "random random" "checker checker")
-ANC=(lo     hi     center  lo      center  lo      center  lo       "lo center" "lo center"    "center center")
-NLV=(2      2      2       2       2       2       2       2        3          3               3)
-NCL=(32     32     32      32      32      32      32      32       48         48              48)
-FRC=(0.5    0.5    0.5     0.5     0.5     0.5     0.5     1.0      0.5        0.5             0.5)
-FIL=(0.6    0.6    0.6     0.6     0.6     0.6     0.6     0.6      0.6        0.6             0.6)
+TAG=(box_lo box_hi lsh_ctr lsh_lo  chk_ctr chk_lo  rnd_ctr rnd_span box_lo_L3  rnd_L3          chk_ctr_L3        jump_L3   jump_rnd_L3)
+SHP=(box    box    lshape  lshape  checker checker random  random   "box box"  "random random" "checker checker" "box box" "random box")
+ANC=(lo     hi     center  lo      center  lo      center  lo       "lo center" "lo center"    "center center"   "lo lo"   "lo lo")
+NLV=(2      2      2       2       2       2       2       2        3          3               3                 3         3)
+NCL=(32     32     32      32      32      32      32      32       48         48              48                48        48)
+FRC=(0.5    0.5    0.5     0.5     0.5     0.5     0.5     1.0      0.5        0.5             0.5               0.5       1.0)
+FIL=(0.6    0.6    0.6     0.6     0.6     0.6     0.6     0.6      0.6        0.6             0.6               0.6       0.6)
 
 echo "generating hierarchies..."
 for i in "${!TAG[@]}"; do
@@ -201,37 +207,37 @@ done
 echo
 
 # --------------------------------------------------------------------------
-# 3. Negative control: the orphan-ghost abort.
+# 3. Level jumps across a periodic wrap.
 #
-# A level that touches a periodic boundary while its parent does not reach the
-# far side of that boundary has, across the wrap, a neighbour two or more levels
-# coarser. The stitch spans one level, so that ghost finds no parent at all and
-# every element that would bridge it is silently not generated -- a gap with
-# nothing to indicate it. Until this control existed the code produced exactly
-# that, and the only symptom was a volume residual on real data.
+# jump_L3 and jump_rnd_L3 put level 2 hard against a periodic boundary while
+# level 1 stops well short of the far side of it. Across that wrap, level 2's
+# neighbour is therefore level 1 only where level 1 happens to be there and
+# level 0 everywhere else. Proper nesting says nothing about this: it constrains
+# a level against its parent inside the domain, and the far face of a periodic
+# direction is not inside anything.
 #
-# So this case must ABORT, and it must abort naming the cause. A run that
-# completes here is the failure.
+# The stitch used to span exactly one level, so those ghosts found no parent,
+# the bridging elements were never generated, and the interface leaked -- which
+# is the -0.0022 residual seen on a four-level flamesheet. It now walks up until
+# it finds a level that is there, so the bridge can be level 0 to level 2 with
+# a ratio-4 collapse, or a mixture of the two across one face. Section 1 has
+# already gated both cases; this section states what they are for, and checks
+# the element count is translation invariant on the torus -- the same hierarchy
+# shifted off the wall must have exactly as many base cells.
 # --------------------------------------------------------------------------
-echo "=== 3. negative control: level 2 at a wall its parent does not wrap ===="
-$MPIRUN -n 1 "$MAKEPLT" n_cell=48 nlevels=3 refine_shape=box box \
-    refine_anchor=lo lo refine_blk=8 refine_frac=0.5 outfile=shp_orphan \
-    > gen_orphan.log 2>&1
-if [ ! -d "shp_orphan" ]; then
-    fail "orphan control : generator failed, see gen_orphan.log"
-else
-    $MPIRUN -n 1 "$VERIFY" infile=shp_orphan is_per="$ALLPER" varnames=dist \
-        > ver_orphan.log 2>&1
-    if grep -q "no owner at any level" ver_orphan.log; then
-        pass "orphan control : aborted, and named the cause"
-    elif grep -q "RESULT:" ver_orphan.log; then
-        fail "orphan control : ran to completion instead of aborting"
-        sed -n 's/^~ relative error/        relative error/p' ver_orphan.log
+echo "=== 3. level jumps across a periodic wrap =============================="
+for pair in "jump_L3 box_lo_L3"; do
+    set -- $pair
+    a=$1; b=$2
+    [ -f "ver_$a.log" ] && [ -f "ver_$b.log" ] || { fail "$a/$b : missing logs"; continue; }
+    na=$(sed -n 's/^  elements *: *//p' ver_$a.log | tr -d ' ')
+    nb=$(sed -n 's/^  elements *: *//p' ver_$b.log | tr -d ' ')
+    if [ "$na" = "$nb" ]; then
+        pass "$a : $na elements, same as $b off the wall (translation invariant)"
     else
-        fail "orphan control : failed for some other reason, see ver_orphan.log"
-        tail -3 ver_orphan.log | sed 's/^/        /'
+        fail "$a : $na elements vs $nb for the same region off the wall"
     fi
-fi
+done
 echo
 
 # --------------------------------------------------------------------------
@@ -265,6 +271,29 @@ if [ -d "shp_rnd_span" ]; then
 else
     fail "legacy control : shp_rnd_span was never generated"
 fi
+echo
+
+# --------------------------------------------------------------------------
+# 5. Negative control: the stitch spanning only one level.
+#
+# single_level_stamp=1 stops the coarse-parent walk after one level, which is
+# what it used to do. On a hierarchy with a level jump across a wrap that must
+# fail -- either by aborting on ghosts it cannot resolve, or by quietly leaving
+# a gap. Passing would mean the walk is not doing anything.
+# --------------------------------------------------------------------------
+echo "=== 5. negative control: stitch limited to one level ==================="
+for t in jump_L3 jump_rnd_L3; do
+    [ -d "shp_$t" ] || { fail "$t control : hierarchy was never generated"; continue; }
+    $MPIRUN -n 1 "$VERIFY" infile=shp_$t is_per="$ALLPER" varnames=dist \
+        face_census=1 single_level_stamp=1 > ver_single_$t.log 2>&1
+    if grep -q "RESULT: PASS" ver_single_$t.log; then
+        fail "$t control : passed with the stitch limited to one level"
+    elif grep -q "no owner at any level" ver_single_$t.log; then
+        pass "$t control : aborted on unresolvable ghosts, as it must"
+    else
+        pass "$t control : $(sed -n 's/^~ relative error *: *//p' ver_single_$t.log)"
+    fi
+done
 echo
 
 echo "======================================================================="
