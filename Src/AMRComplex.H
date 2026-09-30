@@ -176,6 +176,15 @@ public:
         // non-zero interior face parity, because the bridging elements are not
         // generated.
         int                                singleLevelStamp = 0;
+
+        // Keep the explicit element list. It costs 2^DIM gids per element --
+        // 64 bytes in 3D, 21 GB on a 333M-element hierarchy -- and nothing
+        // consumes it: verify(), AMRContour and AMRSegment all go through
+        // forEachElement, which re-derives an element from the node arrays for
+        // the price of reading them. So it is off, and buildElements() only
+        // counts. Ask for it if something genuinely needs random access to the
+        // element set rather than a traversal of it.
+        int                                storeElements = 0;
     };
 
     // Report from verify(). This is the gate described in section 9.1(b) of
@@ -289,7 +298,12 @@ public:
     // exactly the same route as the node identity -- see stampCoarseParents.
     const amrex::MultiFab& field (int lev) const noexcept { return m_field[lev]; }
     long nNodesGlobal () const noexcept { return m_nNodesGlobal; }
-    const amrex::Vector<Element>& elements () const noexcept { return m_elements; }
+    // Requires Params::storeElements. Aborts rather than returning an empty
+    // vector, which would read as "this rank owns no elements".
+    const amrex::Vector<Element>& elements () const;
+
+    // This rank's element count, always available.
+    long nElementsLocal () const noexcept { return m_nElementsLocal; }
     const amrex::Geometry& geom (int lev) const noexcept { return m_geom[lev]; }
 
     // Centre of the cell naming this node, at that node's own level.
@@ -420,7 +434,8 @@ private:
     amrex::Vector<long>                       m_levelOffset;
     amrex::Vector<amrex::Vector<long>>        m_boxOffset;
 
-    amrex::Vector<Element>                    m_elements;   // this rank's share
+    amrex::Vector<Element>                    m_elements;   // only if asked for
+    long                                      m_nElementsLocal = 0;
 };
 
 } // namespace amrcomplex

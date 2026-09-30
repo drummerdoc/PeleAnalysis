@@ -625,18 +625,31 @@ Real AMRComplex::expectedVolume (bool* exact) const
 void AMRComplex::buildElements ()
 {
     m_elements.clear();
+    m_nElementsLocal = 0;
+    const bool store = (m_params.storeElements != 0);
     forEachElement([&] (const Node (&cn)[Element::NNODE], const Real*)
     {
+        ++m_nElementsLocal;
+        if (!store) { return; }
         Element e;
         for (int c = 0; c < Element::NNODE; ++c) { e.n[c] = cn[c].gid; }
         m_elements.push_back(e);
     });
 
     if (m_params.verbose) {
-        Long ne = Long(m_elements.size());
+        Long ne = m_nElementsLocal;
         ParallelDescriptor::ReduceLongSum(ne);
         Print() << "AMRComplex: " << ne << " elements" << std::endl;
     }
+}
+
+const Vector<Element>& AMRComplex::elements () const
+{
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(m_params.storeElements != 0,
+        "AMRComplex::elements() needs Params::storeElements; it is off by "
+        "default because the list costs 2^DIM gids per element and every "
+        "consumer in the tree uses forEachElement instead");
+    return m_elements;
 }
 
 RealVect AMRComplex::nodePosition (const Node& n) const noexcept
