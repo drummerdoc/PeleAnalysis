@@ -38,9 +38,21 @@ int main (int argc, char* argv[])
 
         amrcomplex::AMRComplex cx(p);
         const auto cr = cx.verify();
+        // The volume residual is a gate only where the reference is exact --
+        // see AMRComplex::expectedVolume. On a hierarchy that refines up to a
+        // non-periodic wall the reference is a bound, not an identity, so
+        // refusing to run on a non-zero residual would refuse every real
+        // plotfile. Report it, say what to do about it, and carry on.
         if (!cr.passed()) {
             cx.reportVerify(cr);
-            Abort("complex does not verify; not contouring it");
+            if (cr.referenceExact) {
+                Abort("complex does not verify; not contouring it");
+            }
+            Print() << "WARNING: the volume reference is a bound, not an "
+                    << "identity, because a non-periodic wall carries more than\n"
+                    << "         one level. Contouring anyway. Re-run "
+                    << "amrComplexVerify with is_per=1 in every\n         "
+                    << "direction to gate this hierarchy sharply.\n";
         }
 
         // diagonal_rule=0 selects the deliberately inconsistent subdivision,
