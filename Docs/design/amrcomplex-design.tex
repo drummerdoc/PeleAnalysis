@@ -1,0 +1,56 @@
+\documentclass[11pt,oneside]{report}
+\input{preamble}
+
+\title{\bfseries A Conforming Multilevel Complex for Topological Analysis of
+       AMReX Plotfile Data\\[0.4em]
+       \large Design, Verification, and Application to Cellular Structure in
+       Lean Premixed Hydrogen Flames}
+\author{Marc Day}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent
+This note records the design and verification of \texttt{AMRComplex} and its
+consumers in \texttt{PeleAnalysis}: a cell complex built over an AMReX plotfile
+hierarchy that is conforming across coarse--fine interfaces and correct on
+periodic domains, together with marching-simplex contouring, threshold
+segmentation, and the test apparatus that establishes both.
+
+The motivating problem is the characterisation of cellular structure produced
+by the thermodiffusive instability in lean premixed hydrogen flames, where the
+definition of a ``cell'' is itself unsettled. That shapes the design: the
+tooling exists to \emph{compare} candidate definitions within one framework
+rather than to compute a single privileged one.
+
+Two themes recur and are recorded deliberately. First, a single design
+choice---that a node's identity is its \emph{index}, not its
+\emph{position}---removes an entire class of defect, and most of what follows
+is a consequence of it. Second, several cheap and plausible verification
+checks were found to pass on demonstrably broken output; the negative controls
+that expose them are retained in the source and are documented here as part of
+the design rather than as an afterthought.
+\end{abstract}
+
+\tableofcontents
+
+\input{sec-problem}
+\input{sec-assessment}
+\input{sec-complex}
+\input{sec-contour}
+\input{sec-segment}
+\input{sec-verification}
+\input{sec-topology}
+\input{sec-gpu}
+\input{sec-roadmap}
+
+\appendix
+\input{app-conventions}
+\input{app-build}
+
+\bibliographystyle{plain}
+\bibliography{refs}
+
+\end{document}

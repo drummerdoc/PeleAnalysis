@@ -1,0 +1,93 @@
+\chapter{GPU considerations}
+\label{ch:gpu}
+
+The implementation described so far is host code. This chapter states that
+plainly, separates what would port readily from what would not, and identifies
+the one decision that should be taken before the merge tree is written rather
+than after.
+
+\section{Current state}
+
+There are no \texttt{ParallelFor} launches in \texttt{AMRComplex},
+\texttt{AMRContour} or \texttt{AMRSegment}. Loops are \texttt{AMREX\_LOOP\_3D},
+which expands to serial nested loops on the host, and the working data
+structures in the hot paths are \texttt{std::map}, \texttt{std::unordered\_map}
+and \texttt{std::set}. None of these is usable in device code as written.
+
+This was a deliberate deferral, not an oversight: correctness on coarse--fine
+interfaces and periodic domains was the hard part, and establishing it in host
+code kept the verification tractable. It is nonetheless a real limitation for a
+code base whose production path is GPU.
+
+\section{What ports readily}
+
+\begin{itemize}[leftmargin=*]
+\item \textbf{Node classification} (\cref{sec:identity,sec:stitch}). Index
+  arithmetic over boxes with no data-dependent control flow. The
+  \texttt{AMREX\_LOOP\_3D} bodies map to \texttt{ParallelFor} essentially
+  unchanged; \texttt{Node} is already trivially copyable by construction, so it
+  can live in device memory.
+\item \textbf{Global numbering} (\cref{eq:gid}). A pure function of
+  $(\lev,\iv)$ with no lookup and no communication---evaluable per cell on the
+  device.
+\item \textbf{Element generation} (\cref{sec:ownership}). Ownership is box
+  algebra resolved once per grid on the host; the per-cell corner gather and
+  validity test that follow are a device loop. A count-then-fill pass with a
+  prefix sum replaces \texttt{push\_back}.
+\item \textbf{Simplex subdivision and marching} (\cref{sec:cone}). Per-element,
+  branch-light, fixed-size output. Well suited to the device.
+\item \textbf{Volume and area reductions.} Already reductions; the compensated
+  summation of \cref{ch:verification} needs replacing by a device-friendly
+  equivalent, and the integer-derived volumes of \cref{eq:volume} are
+  unaffected.
+\end{itemize}
+
+\section{What requires redesign}
+
+\begin{itemize}[leftmargin=*]
+\item \textbf{The vertex cache} (\cref{sec:edgekey}). A \texttt{std::map} from
+  edge key to vertex index, with insertion during traversal. The device
+  equivalent is to emit one candidate vertex per crossed edge, sort by the
+  $64$-bit edge key, and compact---replacing the associative container by a sort
+  and a unique. The edge key is already a pair of integers, so this is a change
+  of mechanism rather than of design, and \cref{rule:edgefn} is what makes it
+  legitimate: because a vertex is a function of its edge alone, duplicates are
+  bitwise identical and compaction is exact.
+\item \textbf{Union--find} (\cref{ch:segment}). Pointer-chasing with path
+  compression over a hash map. A device implementation needs a different
+  algorithm---label propagation over a fixed adjacency, or a device-side
+  connected-components pass---together with the adjacency materialised as arrays
+  rather than discovered by traversal.
+\item \textbf{The face and edge censuses} (\cref{sec:faces,sec:orient}). Both
+  build \texttt{std::map} tallies. The exclusive-or parities are already
+  reductions and port directly; the exact incidence counts would become
+  sort-and-count.
+\item \textbf{MEF output} (\cref{ch:contour}). Host-side by nature. The
+  \texttt{.pvtu} path on the roadmap is the better target and is equally
+  host-side, which is appropriate for I/O.
+\end{itemize}
+
+\section{A decision to take before the merge tree}
+
+\decide{Whether the merge tree is written as host code, accepting a
+device-to-host transfer of the node field per snapshot, or designed for the
+device from the start.}
+
+The consideration is that the merge tree is the first component whose cost scales
+with the \emph{volume} of data rather than with the area of an extracted surface.
+Contouring touches only cells straddling one isovalue; a sweep does so once per
+threshold; the merge tree visits every node in sorted order. A global sort of the
+node field is the dominant term, and that is a well-suited device operation
+whereas the union--find that consumes it is not.
+
+The pragmatic shape, if the device route is chosen, is a device sort feeding a
+host tree construction on the resulting order, since the tree itself is small
+compared with the field. That should be settled deliberately rather than
+inherited from the host-only precedent set here.
+
+A second point worth recording: the verification apparatus of
+\cref{ch:verification} is dimension- and backend-agnostic by construction. The
+checksums, the analytic references and the negative controls all compare
+\emph{outputs}, so a device port can be gated on reproducing the host results
+exactly---which is the strongest possible acceptance test for such a port, and is
+available at no additional cost.

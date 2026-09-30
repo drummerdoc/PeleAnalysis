@@ -1,0 +1,135 @@
+\chapter{The complex}
+\label{ch:complex}
+
+\texttt{AMRComplex} builds a single cell complex over the whole plotfile
+hierarchy. Everything in this chapter follows from one decision, stated first.
+
+\section{Identity is an index, not a position}
+\label{sec:identity}
+
+A node is the pair $(\lev,\iv)$: the level and the integer index of the cell
+whose centre it occupies. It is stored as a plain aggregate so that it is
+trivially copyable and can therefore live inside a \texttt{BaseFab} and travel
+through \texttt{FillBoundary} and \texttt{ParallelCopy}.
+
+\begin{designrule}\label{rule:identity}
+Two elements share a vertex because they name the same cell, never because two
+coordinates compared close.
+\end{designrule}
+
+The ordering on nodes is lexicographic---by level, then by index---which is a
+genuine strict weak ordering, unlike the $\epsilon$ comparison of
+\cref{ch:assessment}. Three substantial consequences follow, and they are the
+substance of the design rather than incidental benefits.
+
+\section{Periodic identification is free}
+\label{sec:periodic}
+
+\texttt{FillBoundary} copies node \emph{values} into ghost cells. It cannot
+shift an index stored inside the object it copies. Therefore, after a periodic
+fill, the ghost beyond the high face literally contains the low-face node. That
+copy \emph{is} the periodic identification: there is no arithmetic, no modular
+reduction, and no opportunity for the coordinate-based defect of
+\cref{ch:assessment}.
+
+This satisfies~\ref{req:periodic} exactly. No boundary plane enters any
+calculation, so the arbitrary placement of the domain faces cannot affect any
+reported quantity---which is why the doubly and triply periodic cases cost
+nothing here, a point that returns decisively in \cref{ch:topology}.
+
+\section{Coarse--fine stitching}
+\label{sec:stitch}
+
+The construction is that of \cref{ch:assessment}: fine ghosts lying outside the
+level are stamped with their coarse parent's node, so that a block of
+$r^{\dsp}$ fine positions resolves to one coarse node and interface elements
+become degenerate cells. Refinement ratio is unrestricted; ratios $2$ and $4$
+are both verified.
+
+\paragraph{Proper nesting is a precondition, not a nicety.}
+A level's ghost ring must find valid parents one level down. If the parent level
+is itself covered there by this level, the stitch has nothing to attach to and
+the interface silently leaks volume. The first three-level test failed with a
+$3\%$ residual for exactly this reason---a defect in the test generator, but one
+that nothing detected. Construction now aborts when a ghost stamped from level
+$\lev-1$ comes back covered, naming the levels involved.
+
+\section{Element ownership}
+\label{sec:ownership}
+
+Elements must be generated exactly once, globally, without a deduplication
+pass. The obvious rule is wrong, and wrong in a way that silently removes
+exactly the elements the design exists to produce.
+
+Consider a one-dimensional slice with refinement ratio $2$, a fine region
+occupying coarse cells $[8,24)$ and therefore fine indices $[16,48)$. Coarse
+cell $7$ is valid, at $7.5\,\dvol_c^{1/\dsp}$; coarse cell $8$ is covered; the
+first fine cell centre is at $8.25$ in coarse units. The bridging element spans
+$[7.5, 8.25]$ and its base cell is fine index $15$---a \emph{ghost}. No fine
+box holds it as valid, and the coarse box that would hold it has a covered
+corner and is rejected. Under the rule ``the box whose valid region contains the
+base cell'', nobody generates it, leaving a gap one stitch-layer thick around
+every refined region. Measured on a two-level $32^3$ case: \textbf{1.93\%\ of
+the domain volume}.
+
+The rule that works: the base range is the valid box grown by one \emph{on the
+low side}, and a base cell in that shell belongs to the lowest-indexed box that
+would visit it. Since a \texttt{BoxArray} is globally replicated this is
+deterministic and requires no communication: the same element is produced by
+exactly one rank at any rank count. Periodic wrap images are excluded, since the
+identical element---the same node set, identity being topological---is already
+produced where the cell is valid.
+
+Ownership is resolved as box algebra once per grid, not as a query per cell: the
+low-side shell is at most $\dsp$ boxes, the valid-elsewhere and periodic-image
+exclusions are \texttt{BoxList} subtractions, and the lower-index claim is one
+\texttt{intersections} call.
+
+\section{Global numbering}
+\label{sec:numbering}
+
+A \texttt{BoxArray} is a globally replicated object: \texttt{ba[i]} is the same
+box on every rank for any number of ranks, and only the
+\texttt{DistributionMapping} depends on the rank count. Its own index order is
+therefore already a deterministic global ordering, and
+\begin{equation}
+  \gid(\lev,\iv) \;=\; O_{\lev} \;+\; o_{\lev,i} \;+\; \mathrm{lex}(\iv, B_{\lev,i}),
+  \label{eq:gid}
+\end{equation}
+where $O_{\lev}$ is the cumulative cell count of levels below $\lev$,
+$o_{\lev,i}$ the cumulative count of boxes below $i$ within level $\lev$, and
+$\mathrm{lex}$ the lexicographic offset within box $B_{\lev,i}$.
+
+\Cref{eq:gid} needs \emph{no communication at all}: every term is a box size,
+known globally. It counts every cell rather than only the uncovered ones, which
+costs nothing---no array is allocated per identifier---and buys a great deal:
+$\gid$ becomes a pure function of $(\lev,\iv)$, so it can be assigned at fill
+time and then travels with the identity through \texttt{FillBoundary}, with no
+second pass to propagate identifiers into ghosts. Identifiers are consequently
+sparse over valid nodes; a compaction pass can be added for formats that need
+them contiguous.
+
+\section{Field data}
+\label{sec:fields}
+
+An arbitrary vector of fields is carried on the nodes, on the same grids with
+the same ghost width as the identity, and propagated by the same calls: one
+\texttt{FillBoundary} with the same periodicity, and the coarse-parent stamp
+performing identity and value \emph{in the same loop under the same test}.
+
+Stamping them in a second loop would be a second opportunity for a stitch
+node's value to disagree with the identity it belongs to, and nothing
+downstream would notice: the geometry would still verify and the extracted
+surface would simply be wrong. Fields are initialised to a sentinel so that an
+unpropagated value is detectable rather than plausible, and the verification
+counts valid nodes still carrying it.
+
+\section{The canonical traversals}
+
+Two template traversals are the only sanctioned access:
+\texttt{forEachElement}, which yields each element's corner nodes and their
+field values, and \texttt{forEachNode}, which yields each valid node once with
+its cell volume and a flag marking nodes another rank may also see. Every
+consumer---verification, contouring, segmentation---goes through them, so that
+ownership, corner ordering and the validity test are stated once. Two copies of
+such a loop are two opportunities to disagree about which elements exist.

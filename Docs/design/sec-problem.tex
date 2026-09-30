@@ -1,0 +1,68 @@
+\chapter{The problem, and what it demands of the tooling}
+\label{ch:problem}
+
+\section{Physical target}
+
+The driver is the characterisation of the effects and time-dependent dynamics
+of the thermodiffusive instability in lean premixed hydrogen flames. These
+flames spontaneously form cellular structures whose sizes and separations
+change dramatically with fuel mixture and with the turbulence level of the
+approach flow. The analysis lineage is that of Bremer
+et~al.~\cite{bremer2010burning}; the present work is a rebuild of the
+underlying geometric and topological machinery on modern AMReX.
+
+Relevant configurations include a doubly periodic \emph{flamesheet} with inflow
+and outflow in the third direction, and growing flame kernels, each in two and
+three dimensions, and computed with different models for the transport physics
+that drives the instability.
+
+\section{What is not known}
+
+The tooling exists because a prior question is open: \emph{what a cell is}.
+
+There are chemistry arguments about when a local flame is self-sustaining, and
+there is the distinct notion of \emph{back-supported} structure. Separately,
+observation supplies a set of surrogates that have traditionally stood in for
+the presence of a flame---fuel consumption rate, temperature above some
+threshold, a flame intermediate, and others. Which surrogate to use, and at
+what threshold, is not settled, and the answer may not be the same for all of
+them.
+
+A complication specific to these flames sharpens the difficulty. Because they
+are far from unity Lewis number, the progress variables do not align: contours
+of fuel, of temperature and of intermediates cross one another. Each may
+therefore tell a different story in detail while supporting a similar global
+picture---and whether that is so is itself one of the questions to be answered.
+
+\section{Requirements that follow}
+
+\begin{enumerate}[label=(R\arabic*),leftmargin=*]
+\item\label{req:compare} \textbf{Compare, do not privilege.} The deliverable is
+  not the topology of a chosen field but a framework in which candidate
+  definitions are computed identically and compared directly. Adding a
+  candidate surrogate should be a command-line argument, not a code change.
+\item\label{req:robust} \textbf{Robustness to definition.} Any reported measure
+  must come with a statement of how sensitive it is to the threshold and field
+  that produced it. A number without that statement is not usable here.
+\item\label{req:periodic} \textbf{Periodic correctness with arbitrary face
+  placement.} Doubly and triply periodic domains are routine, and the location
+  of the domain faces carries no physical meaning. No reported quantity may
+  depend on where they happen to fall.
+\item\label{req:amr} \textbf{Correctness across coarse--fine interfaces.} The
+  data are adaptively refined; an analysis that is only approximately right at
+  level transitions is not acceptable, because the structures of interest are
+  exactly where the refinement is.
+\item\label{req:parallel} \textbf{Parallel throughout.} Snapshots are large.
+  Any step that gathers the whole problem to one rank is a design fault, not an
+  optimisation opportunity.
+\item\label{req:track} \textbf{Relate structures across snapshots.} The
+  dynamics are the point, so features must be identifiable from one time to the
+  next.
+\item\label{req:sample} \textbf{Carry sampled data onto extracted geometry.}
+  Surfaces must be able to carry an arbitrary vector of interpolated field
+  values at their nodes; this is what makes conditional analysis possible.
+\end{enumerate}
+
+\Cref{req:robust} deserves emphasis because it determines the topological
+target in \cref{ch:topology}: it is a request for \emph{persistence}, and
+persistence is what a merge tree supplies.

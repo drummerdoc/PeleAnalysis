@@ -1,0 +1,91 @@
+\chapter{State, roadmap and open decisions}
+\label{ch:roadmap}
+
+\section{What exists}
+
+On branch \texttt{amr-complex}, all suites passing in two and three dimensions
+at one to eight ranks:
+
+\begin{table}[htbp]
+\centering
+\caption{Components added.}
+\label{tab:files}
+\begin{tabular}{p{0.34\textwidth}p{0.58\textwidth}}
+\toprule
+file & role \\
+\midrule
+\texttt{Src/AMRComplex.\{H,cpp\}} &
+  conforming multilevel complex; identity $(\lev,\iv)$ \\
+\texttt{Src/AMRContour.\{H,cpp\}} &
+  marching simplices, oriented, carried components, MEF \\
+\texttt{Src/AMRSegment.\{H,cpp\}} &
+  connected components of a threshold set \\
+\texttt{Src/AMRParallel.\{H,cpp\}} &
+  the only place MPI calls appear \\
+\texttt{Src/amrComplexVerify.cpp} &
+  complex gate \\
+\texttt{Src/amrContourVerify.cpp} &
+  surface gate, negative controls \\
+\texttt{Src/amrSweep.cpp} &
+  threshold sweep \\
+\texttt{Src/makeTestPlt.cpp} &
+  synthetic hierarchies with analytic references \\
+\texttt{Src/GNUmakefile.AMRComplex} &
+  standalone, AMReX only, \texttt{DIM ?= 3} \\
+\texttt{Tools/amr*.sh} &
+  the three harnesses \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Roadmap}
+
+\begin{enumerate}[leftmargin=*]
+\item \textbf{Representative snapshots.} One plotfile carrying two or three
+  candidate surrogates---heat release rate, temperature, an
+  intermediate---swept individually, with the $N(v)$ curves laid side by side.
+  This answers whether a plateau exists, supplies real timings for
+  \texttt{ownedBaseRegions} and the segmentation maps at production size, and
+  shows whether the surrogates agree, all before anything is built on an
+  assumption about any of the three.
+\item \textbf{Segmentation as a plotfile}, and contour component counts.
+\item \textbf{Merge tree}, gated on \cref{rule:sweepgate}, and subject to the
+  decision of \cref{ch:gpu}.
+\item \textbf{Overlap matching} (\cref{sec:overlap}), serving both time tracking
+  and cross-surrogate comparison.
+\item \textbf{Boundary invariants} for the $\betti{1}$ events.
+\end{enumerate}
+
+\section{Open decisions}
+
+\decide{Whether a cell is a region thresholded from above or from below. It may
+differ per surrogate, so it remains a runtime choice rather than a design
+commitment.}
+
+\decide{Host or device for the merge tree (\cref{ch:gpu}).}
+
+\decide{Wall extrapolation. Cell-centred data leaves the complex inset by
+$\Delta x/2$ at each non-periodic wall. Zero normal gradient is a defensible
+placeholder and is exactly right for a symmetry, slip or adiabatic wall, but it
+is exactly wrong at a Dirichlet wall, and it introduces a prismatic collar whose
+area contribution is $P\,\Delta x/2$ for inset-plane perimeter $P$, together
+with a spurious curvature ridge standing off each wall at a fixed
+$\Delta x/2$. The error is bounded by how obliquely the surface meets the wall,
+so the incidence-angle distribution on the inset plane decides whether it
+matters at all. Limited linear extrapolation is the recommended default; a
+supplied boundary-condition table is the only correct option at a Dirichlet
+wall.}
+
+\section{Known limits}
+
+\begin{itemize}[leftmargin=*]
+\item MEF output gathers to the I/O processor---the same wall
+  \texttt{isosurface.cpp} has. \texttt{.pvtu} is the intended replacement.
+\item \texttt{ownedBaseRegions} and the segmentation maps have not been exercised
+  at production size.
+\item All verification to date uses synthetic fields on generated hierarchies.
+  Hierarchies from actual regridding will exercise the proper-nesting assertion
+  of \cref{sec:stitch} in a way synthetic ones cannot; if it aborts, that is the
+  check working.
+\item Host-only, per \cref{ch:gpu}.
+\end{itemize}

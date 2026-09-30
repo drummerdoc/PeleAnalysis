@@ -4,18 +4,26 @@ Origin session: `https://claude.ai/code/session_01D4f1Detq1YmcvLsYuCywQA`
 (also in the `Claude-Session:` trailer of every commit on `amr-complex`).
 
 Nothing of value lives in that session. Everything is committed. A new session
-needs this file, `Docs/reeb-graph-assessment.md`, and the repo.
+needs this file, the design note under `Docs/design/`, and the repo.
+
+The design note is LaTeX (`cd Docs/design && make`). It was rewritten natively
+from an earlier Markdown draft, which is removed — that draft grew incrementally
+with corrections patched in place, so reading it top to bottom absorbed the
+mistakes along with the fixes. The LaTeX document is organised as a document and
+states the settled position once. Earlier drafts remain in git history.
 
 ---
 
 ## Paste this to start
 
 > I'm continuing work on AMRComplex/AMRContour in ~/src/PeleAnalysis, branch
-> `amr-complex`. Read `Docs/RESTART.md` first, then `Docs/reeb-graph-assessment.md`
-> sections 14, 15 and 16 — those three sections are the current state, the
-> target problem, and what is verified. Do not re-derive the earlier sections;
-> they are history and several of their conclusions were later corrected in
-> place. Then tell me what you think the next step is before writing any code.
+> `amr-complex`. Read `Docs/RESTART.md`, then the design note sources under
+> `Docs/design/` — start with `sec-problem.tex` and `sec-roadmap.tex`, which give
+> the target and the current state, then whichever of `sec-complex`,
+> `sec-contour`, `sec-segment`, `sec-verification`, `sec-topology` or `sec-gpu`
+> the task touches. Then tell me what you think the next step is before writing
+> any code. Note: technical documents in this repo are written natively in
+> LaTeX, not generated from Markdown.
 
 ---
 
@@ -25,7 +33,7 @@ Post-processing for AMReX plotfiles, aimed at characterising the cellular
 structures of the thermodiffusive instability in lean premixed hydrogen
 flames. The open scientific question — what a flame *cell* actually is — is
 why the tooling is built around comparing candidate definitions rather than
-computing one. Section 15 of the assessment has the full statement.
+computing one. `Docs/design/sec-problem.tex` has the full statement.
 
 ## What is built and verified
 
@@ -40,7 +48,10 @@ On `amr-complex`, all suites passing in 2D and 3D at 1–8 ranks:
 | `Src/amrComplexVerify.cpp`, `amrContourVerify.cpp`, `amrSweep.cpp` | drivers |
 | `Src/makeTestPlt.cpp` | synthetic hierarchies with analytic references |
 | `Src/GNUmakefile.AMRComplex` | standalone, AMReX only, `DIM ?= 3` |
+| `Src/AMRSegment.{H,cpp}` | connected components of a threshold set |
+| `Src/AMRParallel.{H,cpp}` | the only place MPI calls appear |
 | `Tools/amrBuildAndTest.sh` | builds everything, runs every suite |
+| `Docs/design/` | the design note, LaTeX |
 
 ## Build and test
 
@@ -102,9 +113,13 @@ mesh. They are the most valuable thing in the tree.
 Open `[DECIDE]`: whether a cell is thresholded from above or below — may
 differ per surrogate, so it stays a runtime choice.
 
-Deferred deliberately: wall extrapolation (assessment §7.2); `.pvtu` output to
-retire the gather in `writeMEF`; `curvature.cpp` on tet-derived normals in the
-stitch band, which needs real geometry.
+Deferred deliberately: wall extrapolation; `.pvtu` output to retire the gather
+in `writeMEF`; `curvature.cpp` on tet-derived normals in the stitch band, which
+needs real geometry. See `Docs/design/sec-roadmap.tex`.
+
+Open decision recorded in `Docs/design/sec-gpu.tex`: the implementation is
+host-only, and whether the merge tree is written for host or device should be
+settled before it is written, not after.
 
 ## Known limits
 

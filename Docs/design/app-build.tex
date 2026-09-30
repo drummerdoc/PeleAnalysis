@@ -1,0 +1,59 @@
+\chapter{Building and testing}
+\label{app:build}
+
+\section{This document}
+
+\begin{lstlisting}[style=sh]
+cd Docs/design
+make
+\end{lstlisting}
+
+\section{The code}
+
+\texttt{AMREX\_HOME} defaults to \texttt{../../amrex}, correct for a tree laid
+out as \texttt{src/PeleAnalysis} beside \texttt{src/amrex}. The makefile is
+independent of \texttt{Make.Analysis} and therefore of PelePhysics, which
+\texttt{AMRComplex} does not need.
+
+Everything, both dimensions, with all suites:
+
+\begin{lstlisting}[style=sh]
+cd PeleAnalysis
+MPIRUN="mpirun --oversubscribe" Tools/amrBuildAndTest.sh
+\end{lstlisting}
+
+\texttt{--oversubscribe} is required by OpenMPI once a requested rank count
+exceeds the physical core count; MPICH and Intel MPI do not need it. Under Slurm
+use \texttt{MPIRUN=srun} from inside an allocation. Honoured:
+\texttt{COMP}, \texttt{DIMS}, \texttt{RANKS}, \texttt{JOBS},
+\texttt{SKIP\_BUILD}, \texttt{LOGDIR}.
+
+A single target:
+
+\begin{lstlisting}[style=sh]
+cd PeleAnalysis/Src
+make -f GNUmakefile.AMRComplex USE_MPI=TRUE COMP=llvm DIM=3 EBASE=amrSweep -j8
+\end{lstlisting}
+
+\section{Representative invocations}
+
+\begin{lstlisting}[style=sh]
+amrComplexVerify3d.llvm.MPI.ex infile=plt00100 is_per="1 1 0" varnames=temp
+
+amrContourVerify3d.llvm.MPI.ex infile=plt00100 is_per="1 1 0" \
+    isoCompName=temp isoVal=1500 varnames="Y(OH) HeatRelease" \
+    outfile=surf.mef
+
+amrSweep3d.llvm.MPI.ex infile=plt00100 isoCompName=HeatRelease \
+    is_per="1 1 0" vlo=1e8 vhi=1e10 nval=40 log=1 outfile=sweep.dat
+\end{lstlisting}
+
+Negative controls, which should fail:
+
+\begin{lstlisting}[style=sh]
+amrContourVerify3d.llvm.MPI.ex infile=plt00100 is_per="1 1 0" \
+    isoCompName=temp isoVal=1500 diagonal_rule=0
+
+amrContourVerify3d.llvm.MPI.ex infile=plt00100 is_per="1 1 0" \
+    isoCompName=temp isoVal=1500 orient_elements=0
+\end{lstlisting}

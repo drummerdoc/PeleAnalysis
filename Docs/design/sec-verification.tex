@@ -1,0 +1,173 @@
+\chapter{Verification methodology}
+\label{ch:verification}
+
+This chapter is part of the design, not a report on it. The verification
+apparatus is the most transferable content in this work, and two of its
+principles were learned at the cost of shipped defects.
+
+\section{Analytic references, not plausibility}
+
+Every gate compares against something known in closed form rather than against
+a previous run or an eyeball judgement:
+
+\begin{itemize}[leftmargin=*]
+\item \textbf{Complex}: the element volume sum against the expected volume---the
+  full domain in periodic directions, the domain less one level-0 cell in
+  non-periodic ones, where cell-centred data leaves the complex inset by
+  $\Delta x/2$ at each wall. Relative error is \emph{exactly zero} across one to
+  three levels, refinement ratios $2$ and $4$, periodic, non-periodic and mixed,
+  isotropic and anisotropic cells, cubic and elongated domains.
+\item \textbf{Surface}: closed with the correct Euler characteristic, and
+  second-order convergence of the measure. In 3D the area error on a sphere is
+  $-2.799\times10^{-3}$, $-6.985\times10^{-4}$, $-1.745\times10^{-4}$ at
+  $32^3$, $64^3$, $128^3$: ratios $4.007$ and $4.003$. In 2D the arc length
+  gives $4.01$, $4.00$, $4.00$.
+\item \textbf{Carried components}: a linear field interpolated linearly along an
+  edge is exact, so a carried $x$ must return equal to the vertex's own $x$
+  coordinate. Worst error: exactly zero.
+\item \textbf{Segmentation}: \cref{tab:cellcounts}.
+\end{itemize}
+
+Compensated summation is used for the volume sum, not out of fastidiousness:
+naive summation costs $\sim 5\times10^{-10}$ relative at $2\times 10^6$
+elements, and a tolerance loose enough to absorb that would hide a real gap of
+the same size. The gate has to stay sharp as the problem grows.
+
+\section{Face conformity, which volume cannot see}
+\label{sec:faces}
+
+Volume is additive over any decomposition, so a complex with T-junctions at
+coarse--fine interfaces closes \emph{exactly} while being unusable for marching
+simplices. It must therefore be measured separately. Each element face is
+reduced to its set of distinct identifiers and incidences are counted; on a
+periodic domain every non-degenerate face must have incidence exactly two.
+
+Result across one, two and three levels: zero non-manifold faces, zero unmatched
+faces. The degenerate faces counted separately---4800 at two levels, 37632 at
+three---are the stitch cells' collapsed faces, which have no area and take no
+part in sharing. This is also what established the premise the subdivision of
+\cref{sec:cone} depends on.
+
+\section{Negative controls}
+\label{sec:controls}
+
+Each of these exists because the obvious check was caught passing on
+demonstrably broken output. They are retained in the source and should not be
+removed.
+
+\begin{table}[htbp]
+\centering
+\caption{Negative controls and what they reveal about the cheaper checks.}
+\label{tab:controls}
+\begin{tabular}{p{0.26\textwidth}p{0.28\textwidth}p{0.34\textwidth}}
+\toprule
+control & what it breaks & what still passes \\
+\midrule
+\texttt{diagonal\_rule=0} & face-diagonal consistency &
+  area---and \emph{better} than the correct rule \\
+\texttt{orient\_elements=0} & element winding &
+  area \emph{and} closure, both numerically identical \\
+\texttt{check\_vertex\_determinism} & element-dependent vertex data &
+  everything, in serial \\
+improper nesting & stitch with no valid coarse parent &
+  nothing: it aborts \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The first entry is the sharpest lesson available here. Forcing an inconsistent
+diagonal produces 10401 boundary edges, 445 non-manifold edges and
+$\eulerchi = -2976$, while reporting an area error of $-0.0012$ against the
+correct rule's $-0.0016$. \emph{A surface riddled with cracks scored better on
+area than a sound one.}
+
+\begin{designrule}\label{rule:notatest}
+Area is not a topology test. Closure is not an orientation test. Each is
+structurally blind to the defect the next one catches.
+\end{designrule}
+
+\section{MPI invariance, and the checksum discipline}
+\label{sec:mpi}
+
+Matching counts is weak evidence: two different meshes can share a count. The
+apparatus therefore emits order-independent checksums---sums or exclusive-ors of
+per-item hashes, invariant to visit order and to which rank holds what, but
+sensitive to any difference in membership, connectivity, or the exact bits of
+propagated field values.
+
+\begin{designrule}\label{rule:gidkey}
+Anything entering a checksum is named by an identifier or a tuple of
+identifiers, never by a position in an array.
+\end{designrule}
+
+\Cref{rule:gidkey} is stated because it was violated twice. The face census
+summed rank-local counts, and the edge parity hashed rank-local vertex indices;
+both reported an open surface on a closed one. In both cases the structure was
+correct and only the instrument lied.
+
+A related distinction proved necessary. Quantities whose last bits legitimately
+depend on the partition---the volume residual, the surface area---must not be
+compared for equality, because the per-rank sums are compensated while the
+cross-rank reduction is not. Such lines are marked in the output and excluded
+from the comparison; the tolerance test carries the same statement in comparable
+form. Conditional \emph{presence} is as disqualifying as a drifting value: two
+lines printed only at one rank once failed every multi-rank comparison by their
+absence.
+
+\section{Guarded regions are untested regions}
+\label{sec:guarded}
+
+Code inside \texttt{\#ifdef AMREX\_USE\_MPI} is never compiled by a serial
+build. A most-vexing-parse---\texttt{Vector<T> v(std::size\_t(n))} declares a
+function---survived every serial test in a gather for exactly that reason.
+
+The response was structural rather than a correction. \texttt{AMRParallel}
+reduces the conditional region to the MPI calls themselves: counts, offsets,
+resizes and the swap all sit outside the guard and are compiled by every build,
+and the collectives are written once instead of repeated at each call site.
+
+\begin{designrule}\label{rule:guard}
+Keep guarded regions minimal. Everything that is ordinary code belongs outside
+the guard, where every build parses it.
+\end{designrule}
+
+\begin{designrule}\label{rule:vexing}
+Declare, then resize. Never \texttt{Vector<T> v(std::size\_t(n))}.
+\end{designrule}
+
+\section{The pattern in the defects}
+
+Of the defects found by the MPI harness, all but one were in the instrumentation
+rather than in the thing instrumented: rank-local face counts, rank-local vertex
+indices, a whitespace-split parameter list, a renamed extractor terminator, an
+unsorted element list. Only the element-frame vertex position of
+\cref{sec:edgekey} was a defect in the code under test.
+
+That is a favourable sign about the design and an unfavourable one about
+trusting unfalsified checks, which is the argument for \cref{tab:controls}
+existing at all.
+
+\section{Test apparatus}
+
+Three harnesses, all exiting non-zero with a failure count so they can gate:
+
+\begin{itemize}[leftmargin=*]
+\item \texttt{Tools/amrComplexMpiTest.sh} --- five sections: rank invariance at
+  $1$--$8$ ranks including odd counts; distribution invariance at fixed rank
+  count across \texttt{DistributionMapping} strategies, which is the sharper
+  test because it varies only \emph{which box lands where}; decomposition
+  independence across \texttt{max\_grid\_size}; contour invariance; sweep
+  invariance.
+\item \texttt{Tools/amrContourMefTest.sh} --- MEF byte-identity across rank
+  counts by \texttt{cmp}, with round-trip through \texttt{surfMEFtoDAT}.
+\item \texttt{Tools/amrBuildAndTest.sh} --- builds every target in both
+  dimensions and runs everything. It verifies each executable exists and is
+  executable rather than trusting \texttt{make}'s exit status, because an
+  interrupted link once left a non-executable binary that \texttt{make} then
+  reported as up to date.
+\end{itemize}
+
+Each failure guide states what a given symptom localises to. For MEF, the
+byte-layout arithmetic is included, since locating the first differing byte
+against the layout is what distinguishes a node-ordering fault from an
+element-ordering one with no further instrumentation.

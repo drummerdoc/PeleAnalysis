@@ -1,0 +1,110 @@
+\chapter{Assessment of the existing tools}
+\label{ch:assessment}
+
+Two existing tools in \texttt{PeleAnalysis} bear on this work.
+\texttt{isosurface.cpp} extracts a multilevel isosurface by marching cubes;
+\texttt{amrToFE.cpp} converts an AMR hierarchy into a finite-element mesh. The
+first is the natural starting point and turns out to be the wrong one; the
+second contains the construction that is actually needed.
+
+\section{\texttt{isosurface.cpp}: a good front end, the wrong engine}
+
+The plotfile front end is directly reusable and is the tedious part to get
+right: \texttt{PlotFileData} access, component selection by name, per-level
+\texttt{Geometry} carrying an explicit periodicity, \texttt{FillPatchTwoLevels}
+for level-to-level data, and the fine-covered mask with its periodic-shift
+pass. Roughly the first 250 lines of \texttt{main()} survive.
+
+The engine does not, for reasons that are structural rather than qualitative.
+
+\subsection{One isovalue is not a field topology}
+
+Marching cubes yields a triangle soup at a single isovalue with no domain
+connectivity attached. Every contour-tree and Reeb-graph
+algorithm~\cite{carr2003contourtree,tierny2009loopsurgery,gueunet2016contourforests}
+consumes a cell complex with vertex scalars and explicit adjacency, sweeping
+sorted vertices with union--find. \texttt{Polygonise} discards precisely that:
+its output is triangles of iterators into a map keyed on edges. There is no
+path from that representation to critical points and their pairing.
+
+\subsection{The coarse--fine seam is only approximately closed}
+
+Coarse dual cells touching a covered cell emit nothing, and the fine level
+covers them through its ghost band. Coarse and fine nodes on the interface
+plane then land at different positions and are welded only if they compare
+close. For an area integral the resulting cracks are a percent-level error; for
+topology they are fatal, since a crack splits one component into two and
+invents both a feature and a critical point.
+
+\subsection{Node welding is not a strict weak ordering}
+
+The node comparator short-circuits on an $\epsilon$ test before falling through
+to a lexicographic comparison. With $a \sim b$ and $b \sim c$ but
+$a \not\sim c$, transitivity fails and the behaviour of the ordered container
+becomes insertion-order dependent. At $\epsilon = 10^{-15}$ this is effectively
+exact comparison and largely harmless; any attempt to widen the tolerance in
+order to weld coarse nodes to fine ones converts it into non-deterministic
+topology.
+
+\subsection{Piecewise-constant interpolation in the ghost band}
+
+The coarse-to-fine fill is piecewise constant, so the field a fine box sees in
+its ghost region is a staircase of coarse values. The two sides of the
+interface therefore see genuinely different functions, and the staircase
+manufactures exactly-flat plateaus, which are degenerate for any sweep and
+create spurious critical points at every interface.
+
+\subsection{Collation to a single rank}
+
+Nodes and elements are gathered to the I/O processor, which rebuilds the global
+sets serially. This already binds for isosurfaces at scale and is disqualifying
+under~\ref{req:parallel}.
+
+\subsection{The periodic defect is structural}
+
+The tool's own diagnostics record it: across a periodic face the crossing is
+interpolated from raw coordinates rather than the minimum image, so the node
+lands mid-domain---observed inflating a reported arc length by 45\%\ in one
+case. The cause is that connectivity is inferred \emph{from coordinates}. In a
+complex whose adjacency is topological, the defect cannot be expressed.
+
+\section{\texttt{amrToFE.cpp}: the construction that was needed}
+
+This tool builds a conforming multilevel mesh, and the reason it works is a
+single choice: a node's identity is the pair $(\lev,\iv)$ of level and index,
+never a coordinate. Two elements share a vertex because they \emph{name the
+same cell}.
+
+The coarse--fine transition follows from that. For $\lev > 0$ the ring of cells
+within \texttt{ref} of the fine grids but outside them is stamped with the
+\emph{coarse parent's node}: for each coarse cell $\iv$, every one of the
+$r^{\dsp}$ fine positions $r\iv + \iv_t$ receives the node
+$(\lev-1, \iv)$. Coarse cells under a finer grid are marked covered, and an
+element is emitted only when all of its corners are valid. Interface elements
+are therefore emitted at the fine level with their coarse-side corners being
+the coarse level's own nodes, by identity. Because $r^{\dsp}$ fine positions
+collapse onto one coarse node, those elements carry repeated indices: they are
+degenerate hexahedra---pyramids, prisms and tetrahedra written in brick
+form---and that degeneracy \emph{is} the stitching. It is an alternative to the
+explicit stitch-cell case tables of Weber
+et~al.~\cite{weber2001crackfree,weber2012parallel} that needs no case table and
+imposes no restriction on refinement ratio.
+
+What it lacked for the present purpose:
+
+\begin{itemize}[leftmargin=*]
+\item \textbf{Periodicity by duplication, not identification.} Its periodic
+  option grows the domain past the face and appends shifted copies of the
+  boxes. The stamped indices there lie \emph{outside} the domain and are
+  therefore different nodes from their partners on the far side. The result is
+  an extended slab, correct for a seamless picture and wrong for topology: the
+  complex is not a torus, so it carries no $1$-cycles.
+\item \textbf{No parallelism.} The node map is built per rank with a per-rank
+  counter, so identifiers collide between ranks, and the gather is commented
+  out. The tool is single-rank-correct only, and the serialness is in the data
+  structure rather than the interface.
+\item \textbf{Legacy interfaces} predating the modern AMReX API.
+\end{itemize}
+
+\Cref{ch:complex} describes the rebuild that keeps the identity scheme and
+addresses each of these.
