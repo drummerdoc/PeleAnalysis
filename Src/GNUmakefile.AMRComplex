@@ -31,8 +31,8 @@ EBASE ?= amrComplexVerify
 
 include $(AMREX_HOME)/Tools/GNUMake/Make.defs
 
-CEXE_headers += AMRComplex.H  AMRContour.H  AMRSegment.H  AMRParallel.H
-CEXE_sources += AMRComplex.cpp AMRContour.cpp AMRSegment.cpp AMRParallel.cpp
+CEXE_headers += AMRComplex.H  AMRContour.H  AMRSegment.H  AMRParallel.H  AMRJointStats.H
+CEXE_sources += AMRComplex.cpp AMRContour.cpp AMRSegment.cpp AMRParallel.cpp AMRJointStats.cpp
 CEXE_sources += $(EBASE).cpp
 
 Pdirs := Base

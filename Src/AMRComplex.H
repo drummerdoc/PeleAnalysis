@@ -306,6 +306,12 @@ public:
     long nElementsLocal () const noexcept { return m_nElementsLocal; }
     const amrex::Geometry& geom (int lev) const noexcept { return m_geom[lev]; }
 
+    // The hierarchy as it was read, for consumers that need to write a derived
+    // field back out on the same grids.
+    const amrex::BoxArray& grids (int lev) const noexcept { return m_grids[lev]; }
+    const amrex::DistributionMapping& dmap (int lev) const noexcept { return m_dmap[lev]; }
+    const amrex::IntVect& refRatio (int lev) const noexcept { return m_refRatio[lev]; }
+
     // Centre of the cell naming this node, at that node's own level.
     amrex::RealVect nodePosition (const Node& n) const noexcept;
 
