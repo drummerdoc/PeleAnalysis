@@ -90,7 +90,19 @@ def main():
                     help="log colour scale for the volume panel")
     ap.add_argument("--log-resp", action="store_true",
                     help="log colour scale for the response panel")
+    ap.add_argument("--panel", choices=("mean", "relsd"), default="mean",
+                    help="right panel: the conditional mean (default), or the "
+                         "conditional standard deviation relative to it -- the "
+                         "local scatter the coordinates fail to explain, which "
+                         "is where the parametrisation breaks down")
     ap.add_argument("--list", action="store_true", help="list the columns and exit")
+    ap.add_argument("--mean-floor", type=float, default=1e-3,
+                    help="relsd only: mask bins whose |mean| is below this "
+                         "fraction of the largest, where a ratio to it is "
+                         "meaningless (default 1e-3)")
+    ap.add_argument("--clip", type=float, default=99.0,
+                    help="relsd only: clip the colour scale at this percentile "
+                         "so a few extreme bins do not flatten the rest")
     ap.add_argument("--dpi", type=int, default=150)
     args = ap.parse_args()
 
@@ -118,6 +130,7 @@ def main():
     if resp not in resps:
         sys.exit("no response %r; have %s" % (resp, ", ".join(resps)))
     imean = names.index(resp + "_mean")
+    isd = names.index(resp + "_sd")
 
     # Occupied bins only; empty ones are absent from the file, so the grid is
     # rebuilt from the bin centres that are present and the rest left blank.
@@ -128,7 +141,27 @@ def main():
     vol = np.full((ys.size, xs.size), np.nan)
     psi = np.full((ys.size, xs.size), np.nan)
     vol[iy, ix] = data[:, ivol]
-    psi[iy, ix] = data[:, imean]
+    if args.panel == "relsd":
+        # Local relative scatter. R^2 over the whole domain is flattered by all
+        # the quiescent cells the coordinates trivially place; this is the same
+        # question asked bin by bin, so it says WHERE the pair fails rather than
+        # how much of the domain it gets right for free.
+        m = np.abs(data[:, imean])
+        # Relative scatter is meaningless where the mean passes through zero --
+        # the burnt edge and the unburnt corner, where the response itself is
+        # ~0. Those bins divide by nothing and would otherwise set the colour
+        # scale for the whole panel. Mask them and say how many.
+        floor = args.mean_floor * m.max() if m.size else 0.0
+        keep = m > floor
+        with np.errstate(divide="ignore", invalid="ignore"):
+            rel = np.where(keep, data[:, isd]/np.where(keep, m, 1.0), np.nan)
+        psi[iy, ix] = rel
+        nmask = int((~keep).sum())
+        rlabel = "sd / |mean| of %s" % resp
+    else:
+        psi[iy, ix] = data[:, imean]
+        nmask = 0
+        rlabel = "mean %s" % resp
 
     occupied = np.isfinite(vol).sum()
     frac = data[:, ivol].sum()
@@ -138,7 +171,7 @@ def main():
 
     panels = [
         (axes[0], vol, CMAP_VOL, "volume per bin", args.log_volume, False),
-        (axes[1], psi, CMAP_RESP, "mean %s" % resp, args.log_resp, True),
+        (axes[1], psi, CMAP_RESP, rlabel, args.log_resp, args.panel == "mean"),
     ]
     for ax, field, cmap, label, uselog, signed in panels:
         finite = field[np.isfinite(field)]
@@ -149,6 +182,9 @@ def main():
             cmap = CMAP_DIV
             lim = max(abs(finite.min()), abs(finite.max()))
             norm = TwoSlopeNorm(vmin=-lim, vcenter=0.0, vmax=lim)
+        elif label.startswith("sd /") and finite.size:
+            from matplotlib.colors import Normalize
+            norm = Normalize(vmin=0.0, vmax=float(np.percentile(finite, args.clip)))
         elif uselog and finite.size:
             pos = finite[finite > 0]
             if pos.size:
@@ -174,8 +210,11 @@ def main():
         ax.grid(True, color=GRID, linewidth=0.5, alpha=0.6)
         ax.set_axisbelow(True)
 
-    fig.suptitle("%s   (%d occupied bins, %.6g total volume)"
-                 % (args.table, occupied, frac),
+    extra = ("" if not nmask else
+             ",  %d bin%s masked where |mean| < %g of peak"
+             % (nmask, "" if nmask == 1 else "s", args.mean_floor))
+    fig.suptitle("%s   (%d occupied bins, %.6g total volume%s)"
+                 % (args.table, occupied, frac, extra),
                  color=INK, fontsize=11)
     out = args.out or (args.table + ".png")
     fig.savefig(out, dpi=args.dpi, facecolor=SURFACE)
