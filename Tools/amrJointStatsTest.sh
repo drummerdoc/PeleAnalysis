@@ -47,7 +47,7 @@
 #
 # Build:
 #   cd Src
-#   make -f GNUmakefile.AMRComplex USE_MPI=TRUE COMP=llvm EBASE=amrJointStats -j8
+#   make -f GNUmakefile.AMRComplex USE_MPI=TRUE COMP=llvm EBASE=amrJointFit -j8
 #   make -f GNUmakefile.AMRComplex USE_MPI=TRUE COMP=llvm EBASE=makeTestPlt -j8
 #
 # Then from any writable directory:
@@ -66,7 +66,7 @@ DIM=${DIM:-3}
 DTAG="${DIM}d"
 
 shopt -s nullglob
-JS=("$SRC"/amrJointStats${DTAG}.*MPI.ex)
+JS=("$SRC"/amrJointFit${DTAG}.*MPI.ex)
 MAKEPLT=("$SRC"/makeTestPlt${DTAG}.*MPI.ex)
 shopt -u nullglob
 if [ ${#JS[@]} -eq 0 ] || [ ${#MAKEPLT[@]} -eq 0 ]; then

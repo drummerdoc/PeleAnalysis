@@ -6,9 +6,12 @@
 #
 #   make -f GNUmakefile.AMRComplex AMREX_HOME=<path>
 #
-# NOTE: the driver is amrComplexVerify.cpp, not amrComplex.cpp -- on a
-# case-insensitive filesystem the latter would collide with AMRComplex.cpp and
-# produce a single object file holding both translation units.
+# NOTE: a driver must not be the case-variant of a library source. On a
+# case-insensitive filesystem amrComplex.cpp IS AMRComplex.cpp and amrJointStats.cpp
+# IS AMRJointStats.cpp: the second file written replaces the first, one object is
+# built instead of two, and the link fails on every library symbol with
+# "referenced from _main". Hence amrComplexVerify.cpp and amrJointFit.cpp.
+# Tools/amrBuildAndTest.sh checks for this before building anything.
 
 AMREX_HOME ?= ../../amrex
 
