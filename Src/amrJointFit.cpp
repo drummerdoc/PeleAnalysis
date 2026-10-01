@@ -77,12 +77,17 @@ int main (int argc, char* argv[])
 
         Print() << "AMRJointStats: " << cp.infile << ", periodicity";
         for (int d = 0; d < AMREX_SPACEDIM; ++d) { Print() << " " << cp.is_per[d]; }
-        Print() << "\n  coords:";
+        // Every line that is not a table row starts with '#'. That is not
+        // cosmetic: a harness that selects data rows by their leading
+        // whitespace will otherwise pick up these too, and they carry a
+        // different number of fields, which silently shifts every column in a
+        // field-by-field comparison. That cost a debugging round trip once.
+        Print() << "\n# coords:";
         for (int d = 0; d < nc; ++d) {
             Print() << " " << coords[d] << "[" << jp.clo[d] << "," << jp.chi[d]
                     << "]/" << jp.cbins[d];
         }
-        Print() << "\n  resp  :";
+        Print() << "\n# resp  :";
         for (int r = 0; r < nr; ++r) { Print() << " " << resp[r]; }
         Print() << std::endl;
 
@@ -109,10 +114,10 @@ int main (int argc, char* argv[])
         // dropped fraction means clo/chi are wrong, and every R^2 below is
         // then conditional on an unstated subset of the domain.
         const Real vtot = js.volumeTotal() + js.volumeDropped();
-        Print() << "\n  volume in range : " << js.volumeTotal()
+        Print() << "\n# volume in range : " << js.volumeTotal()
                 << "  (" << 100.0*js.volumeTotal()/vtot << "% of "
                 << vtot << ")\n";
-        Print() << "  volume dropped  : " << js.volumeDropped()
+        Print() << "# volume dropped  : " << js.volumeDropped()
                 << "  (" << 100.0*js.volumeDropped()/vtot << "%)\n";
 
         // Explained variance, over every coordinate subset and every bin width

@@ -100,10 +100,20 @@ fail () { echo "  FAIL  $1"; FAIL=$((FAIL+1)); }
 
 # R^2 for a named coordinate set at a given coarsening.
 r2 () { awk -v k="$1" -v c="$2" '$1==k && $2==c {print $3}' ; }
+
+# Table data rows only. The structural test is the point: a leading-whitespace
+# match alone also catches the run's own header lines, which carry a different
+# number of fields and so shift every column in a field-by-field comparison.
+# A data row is exactly "name coarsen nOcc R^2 1-R^2" with the middle two
+# integral, and the exe now prefixes everything else with '#', so this is belt
+# and braces.
+datarows () {
+    awk '/^  [a-z]/ && NF==5 && $2 ~ /^[0-9]+$/ && $3 ~ /^[0-9]+$/'
+}
 # the row fields we care about: name coarsen r2
-rows () { grep -E "^  [a-z]" | awk '{print $1, $2, $4}' ; }
+rows  () { datarows | awk '{print $1, $2, $4}' ; }
 # with the occupancy, for the rank-invariance comparison
-rows4 () { grep -E "^  [a-z]" | awk '{print $1, $2, $3, $4}' ; }
+rows4 () { datarows | awk '{print $1, $2, $3, $4}' ; }
 
 echo "generating hierarchies..."
 $MPIRUN -n 1 "$MAKEPLT" n_cell=96 nlevels=2 refine_shape=random refine_anchor=lo \
@@ -124,8 +134,8 @@ for d in js_big js_jump; do
     [ -d "$d" ] || continue
     out=$($MPIRUN -n 1 "$JS" infile=$d is_per="$ALLPER" coords="$CO" \
             clo="$CLO" chi="$CHI" cbins="$B8" resp=dist 2>&1)
-    vin=$(echo "$out"  | sed -n 's/^  volume in range : *\([^ ]*\).*/\1/p')
-    vout=$(echo "$out" | sed -n 's/^  volume dropped  : *\([^ ]*\).*/\1/p')
+    vin=$(echo "$out"  | sed -n 's/^# volume in range : *\([^ ]*\).*/\1/p')
+    vout=$(echo "$out" | sed -n 's/^# volume dropped  : *\([^ ]*\).*/\1/p')
     if [ "$vin" = "1" ] && [ "$vout" = "0" ]; then
         pass "$d : volume in range exactly 1, nothing dropped"
     else
@@ -347,6 +357,11 @@ $(awk '{
 EOF2
     if [ "${bad:-0}" != "0" ]; then
         fail "$n ranks : $bad row(s) differ in key or occupancy, not just value"
+        # Print them. The first version of this branch reported the count and
+        # nothing else, and the rows in question turned out to be identical --
+        # the mismatch was a column shift in this comparison, not in the data.
+        # A test that withholds its evidence costs more than it saves.
+        awk '$1!=$5 || $2!=$6 || $3!=$7 {print "        " $0}' pair.txt | head -6
     else
         okd=$(awk -v d="$worst" 'BEGIN{print (d<1e-12)?1:0}')
         if [ "$okd" = "1" ]; then
