@@ -122,6 +122,14 @@ int main (int argc, char* argv[])
         // counts -- which is why nOcc is printed beside it.
         for (int r = 0; r < nr; ++r) {
             Print() << "\n# response " << resp[r] << "\n";
+            // The volume of a bin is an integer count per level times that
+            // level's cell volume, so it is bit-identical at any rank count.
+            // R^2 is not and cannot be: it is a ratio of floating-point sums
+            // whose cross-rank reduction is a plain MPI sum, so it agrees to a
+            // few ulp rather than exactly, and where R^2 is itself near zero
+            // those ulp are its leading digits.
+            Print() << "# R^2 is a floating-point reduction: equal across rank"
+                    << " counts to a few ulp, not bit for bit.\n";
             Print() << "#" << std::string(72,'-') << "\n";
             Print() << "# " << std::setw(26) << std::left << "coords" << std::right
                     << std::setw(8)  << "coarsen"

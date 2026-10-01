@@ -102,6 +102,8 @@ fail () { echo "  FAIL  $1"; FAIL=$((FAIL+1)); }
 r2 () { awk -v k="$1" -v c="$2" '$1==k && $2==c {print $3}' ; }
 # the row fields we care about: name coarsen r2
 rows () { grep -E "^  [a-z]" | awk '{print $1, $2, $4}' ; }
+# with the occupancy, for the rank-invariance comparison
+rows4 () { grep -E "^  [a-z]" | awk '{print $1, $2, $3, $4}' ; }
 
 echo "generating hierarchies..."
 $MPIRUN -n 1 "$MAKEPLT" n_cell=96 nlevels=2 refine_shape=random refine_anchor=lo \
@@ -297,17 +299,64 @@ echo
 # --------------------------------------------------------------------------
 echo "=== 6. rank invariance ================================================"
 # --------------------------------------------------------------------------
+# Two different claims, gated differently, because only one of them can be
+# exact.
+#
+# The volume of a bin is an integer count per level times that level's cell
+# volume, reduced as integers and multiplied in a fixed order. That IS bit
+# identical at any rank count, and the bin table's coordinate, volume and cell
+# columns are compared byte for byte. If the partition ever changed which cells
+# land in which bin, this is where it would show, with no tolerance to hide in.
+#
+# R^2 is a ratio of floating-point sums whose cross-rank reduction is a plain
+# MPI sum, so it agrees to a few ulp and not exactly. Within a rank the sums are
+# compensated, so the floor is set by the cross-rank step: a few times 1e-15 on
+# R^2. The gate is 1e-12 absolute, three orders above that floor and far below
+# anything a real distribution dependence could produce -- such a defect moves
+# leading digits, not the fifteenth. The worst difference actually seen is
+# printed on success rather than assumed, so the floor is measured every run.
+#
+# This matters most exactly where it looks worst. Where R^2 is itself near zero,
+# as it is for an independent response at the coarsest aggregation, those few
+# ulp ARE its leading digits: 1.2130630e-11 against 1.2130297e-11 is two
+# spellings of nothing, differing by 3e-16.
+# --------------------------------------------------------------------------
 ref=""
+refbin=""
 for n in $RANKS; do
     $MPIRUN -n "$n" "$JS" infile=js_jump is_per="$ALLPER" coords="$CO" \
-        clo="$CLO" chi="$CHI" cbins="$B16" resp="dist cells" 2>&1 \
-        | sed -n '/volume in range/,$p' | grep -vE '^$' > inv_n$n.txt
-    if [ -z "$ref" ]; then ref="inv_n$n.txt"; continue; fi
-    if cmp -s "$ref" "inv_n$n.txt"; then
-        pass "$n ranks identical to $(basename "$ref")"
+        clo="$CLO" chi="$CHI" cbins="$B16" resp="dist cells" \
+        outfile=bin_n$n.dat 2>&1 | rows4 > inv_n$n.txt
+    cut -d' ' -f1-$((DIM+2)) bin_n$n.dat > binexact_n$n.txt
+    if [ -z "$ref" ]; then ref="inv_n$n.txt"; refbin="binexact_n$n.txt"; continue; fi
+
+    if cmp -s "$refbin" "binexact_n$n.txt"; then
+        pass "$n ranks : bin volumes and cell counts byte-identical"
     else
-        fail "$n ranks differ"
-        diff "$ref" "inv_n$n.txt" | head -12 | sed 's/^/        /'
+        fail "$n ranks : bin volumes or cell counts differ"
+        diff "$refbin" "binexact_n$n.txt" | head -8 | sed 's/^/        /'
+    fi
+
+    paste -d' ' "$ref" "inv_n$n.txt" > pair.txt
+    read -r worst where bad <<EOF2
+$(awk '{
+        if ($1!=$5 || $2!=$6 || $3!=$7) { bad=bad+1 }
+        d=$4-$8; if (d<0) d=-d;
+        if (d>m) { m=d; w=$1"/coarsen"$2 }
+      } END { printf "%.3e %s %d\n", m, (w==""?"-":w), bad+0 }' pair.txt)
+EOF2
+    if [ "${bad:-0}" != "0" ]; then
+        fail "$n ranks : $bad row(s) differ in key or occupancy, not just value"
+    else
+        okd=$(awk -v d="$worst" 'BEGIN{print (d<1e-12)?1:0}')
+        if [ "$okd" = "1" ]; then
+            pass "$n ranks : occupancy identical, worst dR^2 $worst at $where"
+        else
+            fail "$n ranks : worst dR^2 $worst at $where, want < 1e-12"
+            paste -d' ' "$ref" "inv_n$n.txt" \
+              | awk '{d=$4-$8; if(d<0)d=-d; if(d>1e-12) print}' | head -6 \
+              | sed 's/^/        /'
+        fi
     fi
 done
 echo

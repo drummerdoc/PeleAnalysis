@@ -45,6 +45,13 @@ AMRJointStats::AMRJointStats (const AMRComplex& cx, const Params& p)
     m_ss.resize(m_nbinTot*long(std::max(nr,1)), Real(0.0));
 
     // ---- pass one: counts, and the first moment of each response ----------
+    //
+    // Compensated per bin. A bin on a 300M-cell hierarchy can hold a million
+    // cells, where a naive sum carries about 1e-10 of relative error -- enough
+    // to show in the tenth digit of an R^2 that matters. Kahan takes that to a
+    // couple of ulp whatever order the cells arrive in, which also means the
+    // only remaining rank dependence is the cross-rank reduction itself.
+    Vector<Real> comp(m_s1.size(), Real(0.0));
     Vector<Long> outCnt(m_nlev, 0L);
     cx.forEachNode([&] (const Node& n, const Real* v, Real cvol, bool /*shared*/)
     {
@@ -52,7 +59,11 @@ AMRJointStats::AMRJointStats (const AMRComplex& cx, const Params& p)
         if (b < 0) { ++outCnt[n.level]; return; }
         ++m_cnt[b*long(m_nlev) + long(n.level)];
         for (int r = 0; r < nr; ++r) {
-            m_s1[b*long(nr)+long(r)] += cvol*v[nc+r];
+            const long  i = b*long(nr)+long(r);
+            const Real  y = cvol*v[nc+r] - comp[i];
+            const Real  t = m_s1[i] + y;
+            comp[i] = (t - m_s1[i]) - y;
+            m_s1[i] = t;
         }
     });
     if (!m_cnt.empty()) {
@@ -84,13 +95,18 @@ AMRJointStats::AMRJointStats (const AMRComplex& cx, const Params& p)
                 psi[b*long(nr)+long(r)] = m_s1[b*long(nr)+long(r)]/vb;
             }
         }
+        comp.assign(m_ss.size(), Real(0.0));
         cx.forEachNode([&] (const Node& /*n*/, const Real* v, Real cvol, bool)
         {
             const long b = binOf(v);
             if (b < 0) { return; }
             for (int r = 0; r < nr; ++r) {
-                const Real d = v[nc+r] - psi[b*long(nr)+long(r)];
-                m_ss[b*long(nr)+long(r)] += cvol*d*d;
+                const long i = b*long(nr)+long(r);
+                const Real d = v[nc+r] - psi[i];
+                const Real y = cvol*d*d - comp[i];
+                const Real t = m_ss[i] + y;
+                comp[i] = (t - m_ss[i]) - y;
+                m_ss[i] = t;
             }
         });
         ParallelDescriptor::ReduceRealSum(m_ss.dataPtr(), int(m_ss.size()));
