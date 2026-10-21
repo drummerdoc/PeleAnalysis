@@ -38,7 +38,20 @@ CEXE_headers += AMRComplex.H  AMRContour.H  AMRSegment.H  AMRParallel.H  AMRJoin
 CEXE_sources += AMRComplex.cpp AMRContour.cpp AMRSegment.cpp AMRParallel.cpp AMRJointStats.cpp
 CEXE_sources += $(EBASE).cpp
 
-Pdirs := Base
+# amrGradStats takes its gradients from a composite MLPoisson apply, so it needs
+# the linear solvers and what they rest on; amrGradVerify shares the build tree
+# with it. Everything else is AMReX Base alone, and stays that way: the extra
+# directories are not linked into the other tools.
+GRAD_TARGETS := amrGradStats amrGradVerify
+ifneq ($(filter $(EBASE),$(GRAD_TARGETS)),)
+  Pdirs := Base Boundary AmrCore LinearSolvers
+  ifeq ($(EBASE),amrGradStats)
+    CEXE_headers += AMRGradient.H
+    CEXE_sources += AMRGradient.cpp
+  endif
+else
+  Pdirs := Base
+endif
 Ppack += $(foreach dir, $(Pdirs), $(AMREX_HOME)/Src/$(dir)/Make.package)
 include $(Ppack)
 
