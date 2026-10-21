@@ -1,0 +1,12 @@
+# LaTeX build products for the notes kept directly under Docs/. Scoped with a
+# leading slash so this does not reach Docs/source/, which is the Sphinx tree
+# and has tracked assets of its own. Same convention as Docs/design/.gitignore.
+/*.aux
+/*.bbl
+/*.blg
+/*.fdb_latexmk
+/*.fls
+/*.log
+/*.out
+/*.toc
+/*.pdf

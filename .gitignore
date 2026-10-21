@@ -67,3 +67,7 @@ Docs/commitmsgs/
 Docs/reeb-additions-from-newmachine.md
 
 Docs/commitmsgs/
+
+# Scratch left by the build-and-test harness and by interrupted runs.
+Tools/_stale_logs_from_guard_check/
+Tools/work_*/
