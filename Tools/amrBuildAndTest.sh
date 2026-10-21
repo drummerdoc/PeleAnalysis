@@ -25,8 +25,14 @@ RANKS=${RANKS:-"1 2 3 4"}
 export MPIRUN=${MPIRUN:-mpiexec}
 SKIP_BUILD=${SKIP_BUILD:-0}
 
+# amrGradStats and amrGradVerify are last on purpose: they are the only targets
+# that pull in Boundary, AmrCore and LinearSolvers, so they are also the only
+# ones whose first build spends minutes compiling AMReX. Putting them last means
+# a mistake in the cheap targets is reported in seconds rather than after that.
 TARGETS="amrComplexVerify amrContourVerify amrSweep amrJointFit makeTestPlt surfMEFtoDAT"
+TARGETS="$TARGETS amrGradStats amrGradVerify"
 LIBSRC="AMRComplex.cpp AMRContour.cpp AMRSegment.cpp AMRParallel.cpp AMRJointStats.cpp"
+LIBSRC="$LIBSRC AMRGradient.cpp"
 LOGDIR=${LOGDIR:-$(pwd)/amr_test_logs}
 mkdir -p "$LOGDIR"
 
@@ -141,6 +147,7 @@ for d in $DIMS; do
   run_suite shapes              amrComplexShapeTest.sh  "$d"
   run_suite mef                 amrContourMefTest.sh    "$d"
   run_suite joint_stats         amrJointStatsTest.sh    "$d"
+  run_suite grad_stats          amrGradStatsTest.sh     "$d"
 done
 
 echo "=================================================================="
