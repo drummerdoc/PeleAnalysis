@@ -119,6 +119,11 @@ echo
 #     face invariant is "checksum faces", an XOR over every face instance,
 #     which cancels shared faces wherever their elements live.
 #
+# The census is now off by default in the exe, because on a 333M-element
+# hierarchy it is an ordered-map pass over 2e9 faces whose destructor alone
+# overflows the stack. Every case here is under a million elements, where it
+# costs nothing, so the suite asks for it explicitly and keeps the coverage.
+#
 # What remains must be byte-identical.
 invariants () {
     sed -n '/=== AMRComplex verify ===/,/RESULT/p' | grep -v '^$' | grep -v '^~'
@@ -182,7 +187,7 @@ echo "=== 1. rank invariance ==============================================="
 for c in $CASES; do
   for idx in "${!PER_TAG[@]}"; do
     tag=${PER_TAG[$idx]}; per=${PER_VAL[$idx]}
-    $MPIRUN -n 1 "$VERIFY" infile=$c is_per="$per" varnames=dist 2>/dev/null \
+    $MPIRUN -n 1 "$VERIFY" infile=$c is_per="$per" varnames=dist face_census=1 2>/dev/null \
         | invariants > "ref_${c}_${tag}.txt"
     if ! grep -q "PASS" "ref_${c}_${tag}.txt"; then
         fail "$c per=$per : the 1-rank baseline itself does not pass"
@@ -190,7 +195,7 @@ for c in $CASES; do
     fi
     for n in $RANKS; do
       [ "$n" = "1" ] && continue
-      $MPIRUN -n "$n" "$VERIFY" infile=$c is_per="$per" varnames=dist 2>/dev/null \
+      $MPIRUN -n "$n" "$VERIFY" infile=$c is_per="$per" varnames=dist face_census=1 2>/dev/null \
           | invariants > "out_${c}_${tag}_n${n}.txt"
       if diff -q "ref_${c}_${tag}.txt" "out_${c}_${tag}_n${n}.txt" > /dev/null; then
           pass "$c per=$per  n=$n"
@@ -253,10 +258,10 @@ echo
 echo "=== 2. distribution invariance (4 ranks, varying strategy) ==========="
 NP=4
 for c in $CASES; do
-  $MPIRUN -n $NP "$VERIFY" infile=$c is_per="$ALLPER" varnames=dist \
+  $MPIRUN -n $NP "$VERIFY" infile=$c is_per="$ALLPER" varnames=dist face_census=1 \
       DistributionMapping.strategy=SFC 2>/dev/null | invariants > "str_${c}_sfc.txt"
   for strat in KNAPSACK ROUNDROBIN; do
-    $MPIRUN -n $NP "$VERIFY" infile=$c is_per="$ALLPER" varnames=dist \
+    $MPIRUN -n $NP "$VERIFY" infile=$c is_per="$ALLPER" varnames=dist face_census=1 \
         DistributionMapping.strategy=$strat 2>/dev/null | invariants > "str_${c}_${strat}.txt"
     if diff -q "str_${c}_sfc.txt" "str_${c}_${strat}.txt" > /dev/null; then
         pass "$c  SFC vs $strat"
@@ -280,7 +285,7 @@ echo "=== 3. decomposition independence (varying max_grid_size) ============"
 for mgs in 8 16 32; do
   $MPIRUN -n 1 "$MAKEPLT" n_cell=64 nlevels=3 max_grid_size=$mgs \
       outfile=mpi_mgs$mgs > /dev/null 2>&1
-  out=$($MPIRUN -n 4 "$VERIFY" infile=mpi_mgs$mgs is_per="$ALLPER" varnames=dist 2>/dev/null)
+  out=$($MPIRUN -n 4 "$VERIFY" infile=mpi_mgs$mgs is_per="$ALLPER" varnames=dist face_census=1 2>/dev/null)
   res=$( echo "$out" | awk '/RESULT/{print $2}')
   closed=$(echo "$out" | awk '/closed complex/{print $4}')
   unf=$(  echo "$out" | awk '/component\(s\)/{print $5}')

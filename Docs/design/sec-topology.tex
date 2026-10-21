@@ -1,0 +1,142 @@
+\chapter{The topological target}
+\label{ch:topology}
+
+Which topological object to compute is the central design decision, and the
+requirements of \cref{ch:problem} settle it. This chapter records the reasoning,
+including two conclusions that were wrong in earlier drafts and are corrected
+here.
+
+\section{Three candidates}
+
+\begin{table}[htbp]
+\centering
+\caption{Topological summaries of a scalar field, and what periodicity costs
+  each of them.}
+\label{tab:candidates}
+\begin{tabular}{p{0.20\textwidth}p{0.34\textwidth}p{0.34\textwidth}}
+\toprule
+object & shape & cost on a periodic domain \\
+\midrule
+join (merge) tree &
+  always a tree, on a torus as much as anywhere &
+  nothing \\
+contour tree &
+  equals the Reeb graph only if the domain is simply connected &
+  not available: invalid \\
+Reeb graph &
+  carries loops &
+  loop surgery~\cite{tierny2009loopsurgery} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{What a Reeb loop is, and is not}
+
+A cycle in the Reeb graph is a one-parameter family of contours that leaves a
+level, travels, and returns. Cycles arise from non-trivial $1$-cycles in the
+\emph{domain}, not from the shape of any one contour. On a $\dsp$-torus
+$\betti{1}(\Tor{\dsp}) = \dsp$, so the Reeb graph of a triply periodic field can
+carry up to three independent loops, each meaning a structure that closes on
+itself through the wrap. On a non-periodic box $\betti{1} = 0$, the Reeb graph is
+a tree, and it is the contour tree.
+
+\paragraph{It does not give the genus of a level set.} A saddle that adds a
+handle to a contour without merging or splitting it is a \emph{degree-two} node
+in the Reeb graph, and degree-two nodes are conventionally dropped: they sit in
+the middle of an arc and are invisible in the output. Handle counts, tunnels and
+genus evolution are therefore not readable from a Reeb graph. An earlier draft
+claimed otherwise; the correction matters, because it removes the main reason
+one might have paid for loop surgery.
+
+The right tool for genus is far cheaper. Extract the surface, split it into
+connected components, and compute
+\begin{equation}
+  \eulerchi \;=\; V - E + F, \qquad g \;=\; \frac{2 - \eulerchi}{2}
+  \label{eq:euler}
+\end{equation}
+per closed orientable component: exact, linear in the element count, no sweep.
+Its one prerequisite is that the surface be watertight, which is what
+\cref{ch:complex} delivers.
+
+\paragraph{And $\eulerchi$ is the wrong invariant in two dimensions,} where every
+closed curve has $\eulerchi = 0$ before and after any event of interest. The 2D
+statement is the \emph{number} of boundary components together with their
+homology class on the torus: a curve that wraps has no inside, so ``contained
+within'' is conditional on being contractible. Winding numbers---net minimum-image
+displacement around the loop, divided by the domain length---distinguish the two,
+and non-contractible curves necessarily occur in pairs with opposite class,
+which is itself a consistency check.
+
+\section{The decision}
+\label{sec:decision}
+
+Cells are connected components of a super-level set, and their appearance,
+growth and merging is a merge-tree story. Two consequences decide the matter.
+
+\paragraph{Persistence is the robustness measure \ref{req:robust} asked for.}
+Rather than choosing a threshold, compute all thresholds at once. Each cell then
+carries a birth value $b$, a merge value $m$, and a persistence
+\begin{equation}
+  p \;=\; |b - m|,
+  \label{eq:persistence}
+\end{equation}
+which is how far the knob must move to make that cell vanish. The reportable
+quantity is $N(p)$, the number of cells with persistence above $p$. A plateau in
+$N(p)$ is a defensible scale; a featureless continuum says no threshold is
+defensible, which is itself the finding and shifts the question rather than
+answering it badly.
+
+\paragraph{Periodicity costs nothing.} A join tree is always a tree: components
+of $\sublev{v}$ merge monotonically as $v$ decreases and can never form a cycle.
+Loop surgery is required for the contour tree and the Reeb graph, neither of
+which is needed. The doubly and triply periodic cases of \ref{req:periodic},
+with arbitrary face placement, come free---periodicity enters only as adjacency
+in the union--find, which \cref{ch:complex} already supplies. The most expensive
+of the three candidates was the one not required.
+
+\section{What the merge tree does not cover}
+
+A crescent whose tips join, leaving one contour inside another, is a
+$\betti{1}$ event: the region remains one connected component and the merge tree
+is blind to it. Concretely, the region is a topological disk with one boundary
+curve before the event and an annulus with two after, while
+$\betti{0} = 1$ throughout and $\betti{1}$ goes $0 \to 1$. Capturing it requires
+the per-component boundary invariants above---boundary-curve counts with homology
+class in 2D, \cref{eq:euler} per surface component in 3D---which sit on the
+segmentation and are small.
+
+\section{One engine for two comparisons}
+\label{sec:overlap}
+
+Matching segmentations between consecutive snapshots by spatial overlap is the
+same operation as matching a fuel-consumption segmentation against a temperature
+segmentation on the \emph{same} snapshot. Built once it serves both: whether a
+cell persists in time (\ref{req:track}), and whether two surrogates identify the
+same cells (\ref{req:compare}). The second measures the open question of
+\cref{ch:problem} directly---where surrogates agree the structure is
+definition-independent, and where they diverge that is differential diffusion
+expressed as topology rather than as a contour plot.
+
+Segmentation written as a plotfile is what makes this practical: an integer label
+per cell of the hierarchy feeds straight into \texttt{conditionalMean}, so
+statistics of any field inside cells defined by any other field is a one-liner.
+That is the common context the surrogates need in order to be compared at all,
+and it is the presentation used in~\cite{bremer2010burning}.
+
+\paragraph{A hypothesis, not an assertion.} A merge-tree branch that never
+becomes an independent maximum---a saddle-separated shoulder of a larger
+structure---is structurally distinct from one that is its own high-persistence
+branch. If back-supported structures are the former and self-sustaining ones the
+latter, then \cref{eq:persistence} measures the degree of independence. This
+requires physics judgement and is recorded as a question.
+
+\section{Flame surface thickness}
+
+Broadening under turbulent strain follows from \cref{sec:carried} with no new
+machinery: carry $|\nabla f|$ onto the surface as a sampled component, and the
+local thickness is
+\begin{equation}
+  \delta \;\approx\; \frac{\Delta v}{|\nabla f|},
+  \label{eq:thickness}
+\end{equation}
+aggregated over the surface as a distribution rather than a single number.

@@ -1,0 +1,54 @@
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[utf8]{inputenc}
+\usepackage[english]{babel}
+
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage[hidelinks]{hyperref}
+\usepackage[capitalise,noabbrev]{cleveref}
+\usepackage{microtype}
+\usepackage{enumitem}
+\usepackage{geometry}
+\geometry{a4paper,margin=1.1in}
+
+% --- notation ---------------------------------------------------------------
+\newcommand{\gid}{\ensuremath{g}}
+\newcommand{\iv}{\ensuremath{\mathbf{i}}}
+\newcommand{\lev}{\ensuremath{\ell}}
+\newcommand{\dvol}{\ensuremath{\Delta V}}
+\newcommand{\dsp}{\ensuremath{d}}                 % spatial dimension
+\newcommand{\sublev}[1]{\ensuremath{\{f > #1\}}}
+\newcommand{\betti}[1]{\ensuremath{b_{#1}}}
+\newcommand{\eulerchi}{\ensuremath{\chi}}
+\newcommand{\Tor}[1]{\ensuremath{\mathbb{T}^{#1}}}
+
+% code listings: C++ and shell, both in the same restrained style
+\definecolor{codebg}{gray}{0.96}
+\definecolor{codecmt}{rgb}{0.30,0.42,0.30}
+\definecolor{codekw}{rgb}{0.20,0.20,0.55}
+\lstdefinestyle{plain}{
+  basicstyle=\ttfamily\footnotesize,
+  keywordstyle=\color{codekw},
+  commentstyle=\itshape\color{codecmt},
+  stringstyle=\color{black},
+  backgroundcolor=\color{codebg},
+  frame=single, framerule=0pt, framesep=4pt,
+  breaklines=true, breakatwhitespace=true,
+  showstringspaces=false, columns=fullflexible,
+  captionpos=b, aboveskip=1.0em, belowskip=1.0em,
+}
+\lstdefinestyle{cpp}{style=plain,language=C++}
+\lstdefinestyle{sh}{style=plain,language=bash}
+\lstset{style=plain}
+
+% a lightweight environment for the recurring "rule learned from a defect"
+\newtheoremstyle{ruleplain}{1em}{1em}{\itshape}{}{\bfseries}{.}{ }{}
+\theoremstyle{ruleplain}
+\newtheorem{designrule}{Rule}[section]
+
+\newcommand{\decide}[1]{\medskip\noindent\textbf{Decision required.} #1\medskip}

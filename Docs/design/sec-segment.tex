@@ -1,0 +1,114 @@
+\chapter{Segmentation and the threshold sweep}
+\label{ch:segment}
+
+\texttt{AMRSegment} finds the connected components of a threshold set, and
+\texttt{amrSweep} walks the threshold and reports how they behave. Together they
+are the substrate for \ref{req:compare}: the smallest apparatus that produces a
+scientific result about candidate cell definitions.
+
+\section{Components of a threshold set}
+
+Components of $\sublev{v}$---or of $\{f < v\}$---are found by union--find over
+the complex's own adjacency, which already carries the periodic wrap and the
+coarse--fine stitch. No boundary plane enters, so \ref{req:periodic} holds with
+nothing further required.
+
+\paragraph{Labels are the minimum identifier in the component.}
+This is a property of the component itself and not of who found it, so the same
+run at any rank count produces identical labels. Segmentations are therefore
+directly comparable across rank counts, across time snapshots, and across
+different candidate fields---which is precisely what \ref{req:compare}
+and~\ref{req:track} require.
+
+\paragraph{The cross-rank merge exploits the same fact.}
+Each rank publishes $(\gid, \text{local root})$ pairs; two ranks naming the same
+$\gid$ with different roots is exactly the information needed to join their
+components, and every rank replays the same union--find over the gathered pairs,
+so no broadcast is needed.
+
+Only nodes another rank might also see are published: ghosts, owned nodes within
+one cell of a box boundary, and---the case easy to miss---owned nodes adjacent to
+a covered cell, since those may be stamped as coarse parents into a finer box's
+ghost region and so be seen by whichever rank owns that fine box. Omitting the
+third case would fail to join components across a coarse--fine interface,
+silently and only under MPI. Publishing every node instead, as the first version
+did, is $O(N)$ all-to-all: it passes at four ranks on a $64^3$ box and fails on
+the snapshots the tool exists for.
+
+\section{Volumes are integer-derived}
+\label{sec:intvol}
+
+Cell volumes take exactly one value per level. The tally therefore counts
+integers per (component, level) and multiplies at the end:
+\begin{equation}
+  V_c \;=\; \sum_{\lev} n_{c,\lev}\,\dvol_{\lev},
+  \qquad \dvol_{\lev} = \prod_{k=1}^{\dsp} \Delta x_{\lev,k}.
+  \label{eq:volume}
+\end{equation}
+Because uncovered cells partition the domain, \cref{eq:volume} is exact, and
+because it is a function of integers it is bit-identical at any decomposition.
+
+\begin{designrule}\label{rule:intout}
+Where a scientific output can be derived from integers, derive it from integers.
+A quantity that moves in its last bits when the rank count changes is
+comparable only to a tolerance, and here that was avoidable rather than
+inherent.
+\end{designrule}
+
+\section{The sweep}
+
+\texttt{amrSweep} walks the threshold over a linear or logarithmic range and
+reports, at each value: the number of connected regions, the total volume, the
+largest and median component volume, and the isosurface area. Run on several
+candidate surrogates, the tables are directly comparable.
+
+What to look for is a plateau in $N(v)$, or a gap in the size distribution.
+Either is a threshold-independent scale and therefore a defensible cell
+definition. A featureless continuum is also an answer, and arguably the more
+interesting one, because it says that no threshold is defensible and shifts the
+question.
+
+The sweep is a coarse sampling of a merge tree, which makes it a free and sharp
+regression gate:
+
+\begin{designrule}\label{rule:sweepgate}
+When the merge tree is built it must reproduce \texttt{amrSweep}'s $N(v)$
+exactly at every sampled threshold.
+\end{designrule}
+
+\section{Verification against closed forms}
+
+\texttt{makeTestPlt} writes a cellular field
+\begin{equation}
+  f(\mathbf{x}) \;=\; \sum_{k=1}^{\dsp} \cos\!\left(\frac{2\pi n\,x_k}{L_k}\right),
+  \label{eq:cellfield}
+\end{equation}
+which on a periodic domain has exactly $n^{\dsp}$ maxima, and saddles between
+neighbours at a value that can be written down: moving between adjacent maxima
+one term runs from $+1$ to $-1$ while the others stay at $+1$, so the saddle sits
+at $\dsp - 2$.
+
+\begin{table}[htbp]
+\centering
+\caption{Component count against the analytic saddle of \cref{eq:cellfield},
+  $n=3$. The maxima lie \emph{on} the domain faces, so recovering exactly
+  $n^{\dsp}$ of them is also a test that the periodic wrap is present in the
+  adjacency rather than assumed.}
+\label{tab:cellcounts}
+\begin{tabular}{llll}
+\toprule
+case & above the saddle & below & analytic saddle \\
+\midrule
+3D, $n=3$ & 27 components & 1 & exactly $1$ \\
+2D, $n=3$ &  9 components & 1 & exactly $0$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+A threshold sitting exactly \emph{on} a saddle value gives a genuinely
+ill-defined count---the 3D case reads $20$ at $v = 1.000$. That is the
+degeneracy persistence exists to quantify, not a defect.
+
+The sphere case checks volume and area against closed forms to $0.06\%$ and
+$0.04\%$. Counts and volumes are unchanged across \texttt{max\_grid\_size}
+$8/16/32/64$ and across a three-level hierarchy.

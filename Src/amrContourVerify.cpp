@@ -38,6 +38,12 @@ int main (int argc, char* argv[])
 
         amrcomplex::AMRComplex cx(p);
         const auto cr = cx.verify();
+        // The volume residual is an unconditional gate. expectedVolume
+        // measures the wall contribution by the divergence theorem rather than
+        // assuming level 0 at every wall, so the reference is exact for any
+        // level pattern on any number of walls -- there is no longer a case
+        // where it degrades to a bound and a non-zero residual has to be
+        // tolerated.
         if (!cr.passed()) {
             cx.reportVerify(cr);
             Abort("complex does not verify; not contouring it");

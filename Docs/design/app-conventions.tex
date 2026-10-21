@@ -1,0 +1,28 @@
+\chapter{Conventions}
+\label{app:conventions}
+
+Collected for reference. Each was learned from a defect; breaking one
+reintroduces it.
+
+\begin{enumerate}[leftmargin=*]
+\item \cref{rule:identity} --- identity is $(\lev,\iv)$, never a coordinate.
+  Periodic identification then falls out of \texttt{FillBoundary} with no
+  arithmetic, and coarse--fine stitching needs no case table.
+\item \cref{rule:gidkey} --- anything entering a checksum is named by an
+  identifier or a tuple of identifiers, never by a position in an array.
+\item Any ordering written to a file is canonicalised explicitly, never
+  inherited from traversal order. Nodes \emph{and} elements
+  (\cref{ch:contour}).
+\item \cref{rule:guard} --- guarded regions are untested regions. Keep the guard
+  around the collectives only.
+\item \cref{rule:vexing} --- declare, then resize.
+\item \cref{rule:intout} --- derive scientific outputs from integers where
+  possible.
+\item \cref{rule:edgefn} --- nothing about the element that reached an edge may
+  enter what its vertex is.
+\item \cref{rule:noparity} --- do not key a subdivision choice on index parity.
+\item \cref{rule:notatest} --- area is not a topology test; closure is not an
+  orientation test.
+\item \cref{rule:sweepgate} --- the merge tree must reproduce the sweep's
+  $N(v)$ exactly.
+\end{enumerate}

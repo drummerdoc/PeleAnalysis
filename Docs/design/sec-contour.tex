@@ -1,0 +1,136 @@
+\chapter{Contouring}
+\label{ch:contour}
+
+\texttt{AMRContour} extracts an isosurface in three dimensions and a contour
+curve in two, from the complex rather than from the grid.
+
+\section{Marching simplices, not marching cubes}
+
+The complex is subdivided into simplices---tetrahedra in 3D, triangles in
+2D---and contoured with marching tetrahedra (respectively triangles). There are
+three distinct cases and no ambiguous faces, so the extracted surface is
+topologically consistent by construction. There is no asymptotic-decider
+question to answer~\cite{chernyaev1995mc33} and none of the several hundred
+lines of case tables that \texttt{isosurface.cpp} carries.
+
+\section{Subdivision: cone from the minimum identifier}
+\label{sec:cone}
+
+Each cell is coned from its \emph{minimum-$\gid$} corner. In 3D this means the
+three faces not containing the apex, each split on its own minimum-$\gid$
+diagonal; in 2D, the two edges not containing it.
+
+Every face of the cell then ends up split by the diagonal through its own
+minimum-$\gid$ corner. For the faces containing the apex this is automatic,
+since a corner minimal over the cell is minimal over any face containing it;
+for the opposite faces it is imposed. Two cells sharing a face see the same
+corner identifiers and therefore choose the same diagonal.
+
+\begin{designrule}\label{rule:noparity}
+Do not key the diagonal choice on index parity. Parity differs between levels,
+so a parity rule fails exactly where two levels meet---the one place the
+subdivision must be right.
+\end{designrule}
+
+This construction was adopted only after establishing the premise it depends
+on. That two cells at a coarse--fine interface share a face \emph{as a matching
+set of nodes} is not obvious: the stitch cells' coarse-side faces collapse to
+points or edges for most index parities, and a T-junctioned complex would tile
+the domain by volume while failing to share faces. The face-incidence census of
+\cref{sec:faces} settles it by measurement.
+
+Degenerate simplices---those with repeated identifiers, arising from stitch
+cells---are dropped, which is what turns a degenerate hexahedron into the
+pyramid or prism it actually is.
+
+\section{Surface vertices are named by their edge}
+\label{sec:edgekey}
+
+A surface vertex is identified by the edge it lies on, and that edge is named by
+the unordered pair of node identifiers at its ends. Two elements sharing an
+edge therefore find the same vertex by identity, at any level and across the
+periodic wrap---no coordinate welding, no tolerance, and none of the crack and
+mis-placement failures that follow from either.
+
+Everything about a vertex must be a function of the edge alone. This was not
+initially true: the position was reconstructed as \emph{origin plus offset} in
+the frame of the enclosing element, and two elements sharing an edge have
+different origins, so they produced copies differing by an ulp. Within a rank
+the cache hid this completely---only the first element to reach an edge ever
+computed it---and it surfaced only as two ranks disagreeing. The position is now
+computed from the two end nodes' own coordinates, with the far node brought to
+its minimum image of the near one:
+\begin{equation}
+  \mathbf{x}_v \;=\; \mathbf{x}_0 + t\,\bigl(\mathbf{x}_1^{\,\mathrm{mi}} - \mathbf{x}_0\bigr),
+  \qquad
+  t = \frac{v - f_0}{f_1 - f_0},
+  \label{eq:vertpos}
+\end{equation}
+with the pair ordered by identifier so that $t$ is likewise independent of who
+asked.
+
+\begin{designrule}\label{rule:edgefn}
+Nothing about the element that reached an edge may enter what its vertex is.
+\end{designrule}
+
+\section{Orientation}
+\label{sec:orient}
+
+Nothing upstream constrains the winding: vertex order emerges from the marching
+case, which follows the simplex's corner order, which follows the cone
+construction---all arbitrary relative to the geometry. Measured on a three-level
+sphere before this was imposed: \textbf{64598 of 157680 boundary items
+misoriented}, about $41\%$, which is what random produces. The corresponding
+check in \texttt{isosurface.cpp} is an empty function body.
+
+Each element is now oriented so its normal points toward \emph{increasing} $f$.
+The reference direction is from the below-value corners of the simplex to its
+above-value corners: exact, local, and independent of the simplex's handedness.
+
+Verification is combinatorial rather than a comparison of normals. A closed
+surface is consistently oriented exactly when every interior edge is traversed
+in \emph{opposite} directions by the two elements sharing it. That is reported
+two ways: a rank-local exact count, and a signed modular sum in which each
+traversal contributes $\pm$ its hash, so a correct pair cancels wherever the two
+elements live and the global result is exactly zero at any rank count. In 2D the
+same statement applies to segment endpoints---each vertex the head of one
+segment and the tail of the other.
+
+As an independent geometric confirmation, the enclosed volume by the divergence
+theorem on a sphere of radius $0.3$ evaluates to $+0.1130050$ against an exact
+$0.1130974$: positive to $0.08\%$, so the normals point outward rather than
+merely agreeing with one another.
+
+\section{Carried components}
+\label{sec:carried}
+
+Requirement~\ref{req:sample}. Every carried field is interpolated at the same
+parameter $t$ of \cref{eq:vertpos} that the isosurface component determines,
+which is the convention of \texttt{isosurface.cpp}. Because the vertex is cached
+on its edge key, a carried value is computed \emph{once} and every element
+sharing that edge receives the identical result---across levels and across the
+wrap---rather than each recomputing and the copies being reconciled afterwards
+by comparing coordinates.
+
+One caveat is worth recording. At a stitch edge the two endpoints lie on
+different levels, so a carried value there is linearly blended across a
+resolution jump over a physically longer edge. That is the truthful thing to do
+with the data available, and it applies equally to the surface position itself,
+but sampled values in the stitch band are a blend across levels rather than a
+fine-level quantity.
+
+\section{Output}
+
+MEF is written in the format the existing \texttt{*MEF} chain reads: title,
+variable names, element and node-per-element counts, a node block as an
+\texttt{FArrayBox} in node-major order, and one-based connectivity. Under MPI it
+gathers to the I/O processor---the same wall \texttt{isosurface.cpp} has, and the
+reason a \texttt{.pvtu} path remains on the roadmap. It differs in one respect
+that matters: duplicate vertices merge by \emph{edge key} rather than by
+coordinate proximity, so the merge is exact and the global node ordering, a sort
+on those keys, is identical at any rank count.
+
+Both orderings must be canonicalised. Sorting the nodes and not the elements
+left the node block byte-identical across rank counts and the connectivity block
+differing from its first byte, which is how the defect was localised without
+further instrumentation.

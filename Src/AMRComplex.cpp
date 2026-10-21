@@ -346,54 +346,101 @@ void AMRComplex::classifyNodes (PlotFileData& pf)
 //
 void AMRComplex::stampCoarseParents (int lev)
 {
-    const IntVect rr = m_refRatio[lev-1];
+    // Walk up the levels, not just one. The stitch was written as if a fine
+    // ghost always has a parent at lev-1, which is what proper nesting
+    // guarantees INSIDE the domain -- and only inside it. Across a periodic
+    // wrap the neighbour is whatever happens to be on the far face, and there
+    // is no nesting rule relating the two. A doubly periodic flamesheet
+    // refines to level 3 at the flame and leaves the far end of the third
+    // direction at level 1 or 0, so a level-2 ghost wrapping onto that face
+    // finds no level-1 cell at all. There is nothing wrong with that
+    // hierarchy; the stitch was simply too narrow. Falling through to the next
+    // coarser level costs one extra pass, only over ghosts still unresolved,
+    // and the element it produces is a degenerate hexahedron exactly like any
+    // other -- a block of ratio^DIM fine positions resolving to one coarse
+    // node is the whole mechanism, and it does not care whether ratio is 2 or
+    // 4 or 8.
+    IntVect rr(AMREX_D_DECL(1,1,1));
 
-    // Parents of the fine ghost ring: coarsen the level's boxes, then grow by
-    // one coarse cell, which certainly covers them.
-    BoxArray cgba = BoxArray(m_grids[lev]).coarsen(rr);
-    cgba.grow(1);
+    for (int src = lev-1; src >= 0; --src) {
+        rr *= m_refRatio[src];
 
-    FabArray<BaseFab<Node>> cnodes(cgba, m_dmap[lev], 1, 0);
-    MultiFab cfield;
-    if (m_ncomp > 0) {
-        cfield.define(cgba, m_dmap[lev], m_ncomp, 0);
-        cfield.setVal(FIELD_SENTINEL);
-        cfield.ParallelCopy(m_field[lev-1], 0, 0, m_ncomp, IntVect(0), IntVect(0),
-                            m_geom[lev-1].periodicity());
-    }
+        // Only ghosts that nothing has claimed yet. Counted globally, because
+        // the copies below are collective and every rank must agree on whether
+        // this pass happens at all.
+        Long unresolved = 0;
+        for (MFIter mfi(m_nodes[lev]); mfi.isValid(); ++mfi) {
+            const Box  gbx = mfi.fabbox();
+            const Box& vbx = mfi.validbox();
+            auto const& f  = m_nodes[lev].const_array(mfi);
+            AMREX_LOOP_3D(gbx, i, j, k,
+            {
+                if (vbx.contains(IntVect(AMREX_D_DECL(i,j,k)))) { continue; }
+                if (f(i,j,k).type == Node::INIT) { ++unresolved; }
+            });
+        }
+        ParallelDescriptor::ReduceLongSum(unresolved);
+        if (unresolved == 0) { break; }
+        if (m_params.singleLevelStamp && src < lev-1) { break; }
 
-    for (MFIter mfi(cnodes); mfi.isValid(); ++mfi) {
-        const Box& bx = mfi.validbox();
-        auto const& a = cnodes.array(mfi);
-        AMREX_LOOP_3D(bx, i, j, k,
-        {
-            a(i,j,k) = makeNode(lev-1, IntVect(AMREX_D_DECL(i,j,k)), Node::INIT);
-        });
-    }
+        // Parents of the fine ghost ring: coarsen the level's boxes to the
+        // source level, then grow by one source cell, which certainly covers
+        // them -- coarsen(V.grow(1)) is contained in coarsen(V).grow(1) at any
+        // ratio.
+        BoxArray cgba = BoxArray(m_grids[lev]).coarsen(rr);
+        cgba.grow(1);
 
-    cnodes.ParallelCopy(m_nodes[lev-1], 0, 0, 1, IntVect(0), IntVect(0),
-                        m_geom[lev-1].periodicity());
+        FabArray<BaseFab<Node>> cnodes(cgba, m_dmap[lev], 1, 0);
+        MultiFab cfield;
+        if (m_ncomp > 0) {
+            cfield.define(cgba, m_dmap[lev], m_ncomp, 0);
+            cfield.setVal(FIELD_SENTINEL);
+            cfield.ParallelCopy(m_field[src], 0, 0, m_ncomp, IntVect(0), IntVect(0),
+                                m_geom[src].periodicity());
+        }
 
-    // Identity and value are stamped in the same pass, under the same test.
-    // Two separate loops would be two chances for a stitch node's value and
-    // its identity to disagree, and nothing downstream would notice.
-    for (MFIter mfi(m_nodes[lev]); mfi.isValid(); ++mfi) {
-        const Box& gbx = mfi.fabbox();
-        auto const& f  = m_nodes[lev].array(mfi);
-        auto const& c  = cnodes.const_array(mfi);
-        const int nc   = m_ncomp;
-        Array4<Real> ff, cf;
-        if (nc > 0) { ff = m_field[lev].array(mfi); cf = cfield.array(mfi); }
-        AMREX_LOOP_3D(gbx, i, j, k,
-        {
-            if (f(i,j,k).type == Node::INIT) {
-                const IntVect civ = amrex::coarsen(IntVect(AMREX_D_DECL(i,j,k)), rr);
-                f(i,j,k) = c(civ);
-                for (int n = 0; n < nc; ++n) {
-                    ff(i,j,k,n) = cf(AMRCX_IJK(civ),n);
+        for (MFIter mfi(cnodes); mfi.isValid(); ++mfi) {
+            const Box& bx = mfi.validbox();
+            auto const& a = cnodes.array(mfi);
+            AMREX_LOOP_3D(bx, i, j, k,
+            {
+                a(i,j,k) = makeNode(src, IntVect(AMREX_D_DECL(i,j,k)), Node::INIT);
+            });
+        }
+
+        cnodes.ParallelCopy(m_nodes[src], 0, 0, 1, IntVect(0), IntVect(0),
+                            m_geom[src].periodicity());
+
+        // Identity and value are stamped in the same pass, under the same test.
+        // Two separate loops would be two chances for a stitch node's value and
+        // its identity to disagree, and nothing downstream would notice.
+        //
+        // A source cell that is itself INIT is not there at all -- outside this
+        // level's BoxArray -- so the ghost is left unresolved for the next pass
+        // up. A COVERED source IS stamped, deliberately: it means the source
+        // level is refined where this ghost needs a parent, which is a nesting
+        // error rather than a missing level, and stamping it is what lets the
+        // check in classifyNodes name it precisely instead of reporting the
+        // generic "no owner anywhere" further down.
+        for (MFIter mfi(m_nodes[lev]); mfi.isValid(); ++mfi) {
+            const Box& gbx = mfi.fabbox();
+            auto const& f  = m_nodes[lev].array(mfi);
+            auto const& c  = cnodes.const_array(mfi);
+            const int nc   = m_ncomp;
+            Array4<Real> ff, cf;
+            if (nc > 0) { ff = m_field[lev].array(mfi); cf = cfield.array(mfi); }
+            AMREX_LOOP_3D(gbx, i, j, k,
+            {
+                if (f(i,j,k).type == Node::INIT) {
+                    const IntVect civ = amrex::coarsen(IntVect(AMREX_D_DECL(i,j,k)), rr);
+                    if (c(civ).type == Node::INIT) { continue; }
+                    f(i,j,k) = c(civ);
+                    for (int n = 0; n < nc; ++n) {
+                        ff(i,j,k,n) = cf(AMRCX_IJK(civ),n);
+                    }
                 }
-            }
-        });
+            });
+        }
     }
 }
 
@@ -492,6 +539,33 @@ BoxList AMRComplex::ownedBaseRegions (int lev, int boxIdx) const
     // Ownership is decided on the canonical name; the owned region is handed
     // back in this box's own frame, since that is where its ghost cells, and
     // so the element's corners, are read.
+    // NEGATIVE CONTROL. Params::legacyOwnership reinstates the defect the
+    // canonical-name logic below exists to remove: decide ownership by
+    // comparing RAW box indices. Across a periodic seam the same stitch base
+    // is a ghost of two boxes under two different raw indices, so each owns it
+    // under its own name and the element is generated twice. Confined to the
+    // low side of a refined region that reaches a seam, which is why every
+    // centred-box synthetic case missed it. Tools/amrComplexShapeTest.sh sets
+    // this and requires the volume gate to FAIL; if it ever passes here, the
+    // gate has stopped measuring anything.
+    if (m_params.legacyOwnership) {
+        for (const Box& P : remaining) {
+            BoxList claimed;
+            Box q = P;
+            for (int d = 0; d < AMREX_SPACEDIM; ++d) { q.growHi(d,1); }
+            ba.intersections(q, isects);
+            for (const auto& pr : isects) {
+                if (pr.first >= boxIdx) { continue; }
+                Box lo = ba[pr.first];
+                for (int d = 0; d < AMREX_SPACEDIM; ++d) { lo.growLo(d,1); }
+                const Box ov = lo & P;
+                if (ov.ok()) { claimed.push_back(ov); }
+            }
+            owned.join(amrex::complementIn(P, claimed));
+        }
+        return owned;
+    }
+
     const Geometry& geom = m_geom[lev];
     Vector<IntVect> imageShifts(1, IntVect::TheZeroVector());
     for (int d = 0; d < AMREX_SPACEDIM; ++d) {

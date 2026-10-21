@@ -16,6 +16,23 @@ int main (int argc, char* argv[])
         pp.get("infile", p.infile);
         pp.query("finestLevel", p.finestLevel);
         pp.query("verbose", p.verbose);
+        pp.query("legacy_ownership", p.legacyOwnership);
+        pp.query("single_level_stamp", p.singleLevelStamp);
+
+        // The face census is an argument to verify(), not a Params field: it
+        // costs a std::map over every face instance on the rank and is off by
+        // default. amrComplexVerify is the tool whose job is to run it, so it
+        // exposes the switch. report_bad_faces, which printed the corners of
+        // the first N non-manifold faces, has no counterpart in this
+        // implementation and is accepted-and-ignored rather than silently
+        // dropped, so an old command line says what happened.
+        int faceCensus = 0;   pp.query("face_census", faceCensus);
+        int reportBad  = 0;
+        if (pp.query("report_bad_faces", reportBad) && reportBad > 0) {
+            faceCensus = 1;
+            amrex::Print() << "NOTE report_bad_faces is not available in this "
+                           << "build; enabling face_census instead.\n";
+        }
 
         // Field components to carry on the nodes, by plotfile variable name.
         if (const int nv = pp.countval("varnames")) {
@@ -37,7 +54,7 @@ int main (int argc, char* argv[])
         Print() << std::endl;
 
         amrcomplex::AMRComplex cx(p);
-        const auto rep = cx.verify();
+        const auto rep = cx.verify(faceCensus != 0);
         cx.reportVerify(rep);
     }
     amrex::Finalize();

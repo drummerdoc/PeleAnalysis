@@ -142,6 +142,26 @@ public:
         int                                finestLevel = -1;   // -1 => all
         amrex::Array<int,AMREX_SPACEDIM>   is_per      = {{AMREX_D_DECL(0,0,0)}};
         int                                verbose     = 0;
+
+        // The two below are NEGATIVE CONTROLS, not options. Each reinstates a
+        // defect that real data exposed, so that the suite checking for that
+        // defect can be shown to fail when it is present. A gate nothing can
+        // fail is not a gate, and these are what stop
+        // Tools/amrComplexShapeTest.sh passing vacuously. Never set either in
+        // production; both are wrong on purpose.
+        //
+        // legacyOwnership: decide stitch-base ownership on raw box indices
+        // instead of on the base cell's canonical name. On a torus one cell
+        // has up to 2^DIM literal indices, so each box claims it under its own
+        // name and the element is generated more than once -- a small POSITIVE
+        // volume residual, confined to periodic seams.
+        int                                legacyOwnership  = 0;
+        // singleLevelStamp: stop the coarse-parent stitch at lev-1 instead of
+        // walking up every level. A level reaching a periodic face with no
+        // coarser level behind it then leaves its wrapped ghosts unresolved
+        // and their elements are dropped -- a gap one stitch layer thick, and
+        // silent.
+        int                                singleLevelStamp = 0;
     };
 
     // Report from verify(). This is the gate described in section 9.1(b) of
@@ -221,7 +241,12 @@ public:
 
     // faceCensus: also take the rank-local face-incidence census. Useful in
     // tests and debugging; costs a map over every face instance on the rank.
-    VerifyReport verify (bool faceCensus = true) const;
+    // faceCensus defaults OFF: it is a std::map over every face instance on
+    // the rank, which at production size is 2e9 insertions, several GB per
+    // rank, and a recursive destructor that overflows the stack. faceParity is
+    // the rank-independent form of the same statement and always runs. Ask for
+    // the census explicitly when localising a gap.
+    VerifyReport verify (bool faceCensus = false) const;
     void reportVerify (const VerifyReport& r) const;
 
     int nLevels () const noexcept { return m_nlev; }
