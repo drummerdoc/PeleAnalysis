@@ -173,6 +173,12 @@ public:
         amrex::Real elementVolume = 0.0;
         amrex::Real relError      = 0.0;
 
+        // Elements generated more than once, counted as the excess (a triple
+        // counts twice). Only meaningful when the census ran: it needs a map
+        // over every element on the rank, the same cost as the face census, so
+        // it is gated behind the same flag. -1 means not counted.
+        long duplicateElements = -1;
+
         long nNodes    = 0;   // VALID nodes, global
         long nElements = 0;   // global
 

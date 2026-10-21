@@ -240,11 +240,26 @@ for idx in 1 2; do
     fi
   done
 done
-if $MPIRUN -n 1 "$VERIFY" infile=$c is_per="$ALLPER" varnames=dist 2>&1 \
-       | grep -q "not properly nested"; then
-    pass "$c per=$ALLPER  aborts on nesting (negative control)"
+# Read fully periodic, mpi_SH has level 2 reaching a periodic face with no
+# level 1 behind it. This used to abort as a nesting error, and that assertion
+# was what this control checked. It was the wrong conclusion: proper nesting
+# guarantees a parent at lev-1 INSIDE the domain and only there, and across a
+# wrap the neighbour is whatever lies on the far face, with no nesting rule
+# relating the two. The hierarchy is legitimate and the stitch was too narrow.
+# stampCoarseParents now walks up every level, so this case VERIFIES, and the
+# control has moved onto the knob that truncates the walk.
+out=$($MPIRUN -n 1 "$VERIFY" infile=$c is_per="$ALLPER" varnames=dist face_census=1 2>&1)
+if echo "$out" | grep -q "RESULT: PASS"; then
+    pass "$c per=$ALLPER  multi-level stitch closes the wrap ($(echo "$out" | sed -n 's/^~ relative error *: *//p'))"
 else
-    fail "$c per=$ALLPER  should abort on nesting across the periodic face"
+    fail "$c per=$ALLPER  the multi-level coarse-parent stitch does not close it"
+    echo "$out" | grep -E "relative error|RESULT|not properly nested" | sed 's/^/        /'
+fi
+if $MPIRUN -n 1 "$VERIFY" infile=$c is_per="$ALLPER" varnames=dist \
+       single_level_stamp=1 2>&1 | grep -q "not properly nested"; then
+    pass "$c per=$ALLPER  single_level_stamp aborts on the wrap (negative control)"
+else
+    fail "$c per=$ALLPER  single_level_stamp should abort: the control is vacuous"
 fi
 echo
 

@@ -705,6 +705,10 @@ AMRComplex::VerifyReport AMRComplex::verify (bool faceCensus) const
     Long nodeSum = 0, eltSum = 0;
     unsigned long long facePar = 0ULL;
     std::map<FaceKey,int> faceCount;
+    // Element identity is its corner node set, sorted so that a duplicate
+    // generated in another box's frame hashes the same. Gated with the census
+    // for cost: one map insertion per element.
+    std::map<std::array<long,Element::NNODE>,long> eltCount;
     Vector<Long> shape(Element::NNODE+1, 0);
 
     for (int lev = 0; lev < m_nlev; ++lev) {
@@ -748,6 +752,12 @@ AMRComplex::VerifyReport AMRComplex::verify (bool faceCensus) const
     // every other consumer agree by construction about which elements exist.
     forEachElement([&] (const Node (&cn)[Element::NNODE], const Real*)
     {
+        if (faceCensus) {
+            std::array<long,Element::NNODE> ek;
+            for (int c = 0; c < Element::NNODE; ++c) { ek[c] = cn[c].gid; }
+            std::sort(ek.begin(), ek.end());
+            ++eltCount[ek];
+        }
         ++nElt;
 
         int distinct = 0;
@@ -904,6 +914,12 @@ AMRComplex::VerifyReport AMRComplex::verify (bool faceCensus) const
         else                     { ++r.facesBad; }
     }
     r.facesDegenerate = degenFaces;
+    if (faceCensus) {
+        long dup = 0;
+        for (const auto& e : eltCount) { if (e.second > 1) { dup += e.second - 1; } }
+        ParallelDescriptor::ReduceLongSum(dup);
+        r.duplicateElements = dup;
+    }
 
     // XOR is associative and commutative, so this is independent of both the
     // visit order and the distribution -- unlike the incidence census above,
@@ -965,6 +981,15 @@ void AMRComplex::reportVerify (const VerifyReport& r) const
         Print() << "  fields         : " << m_ncomp << " component(s), "
                 << r.nodesUnfilled << " VALID node(s) unfilled"
                 << (r.fieldsFilled() ? " (ok)" : "  <-- PROBLEM") << "\n";
+    }
+    // Printed in the format Tools/amrComplexShapeTest.sh parses; it reads this
+    // line to tell "the volume is wrong because elements are duplicated" from
+    // "the volume is wrong for some other reason", which is the difference
+    // between a diagnostic control and a red light.
+    if (r.duplicateElements >= 0) {
+        Print() << "  duplicate elts : " << r.duplicateElements << "\n";
+    } else {
+        Print() << "  duplicate elts : not counted (face_census=1 to count)\n";
     }
     Print() << "  checksum nodes : " << r.nodeChecksum << "\n";
     Print() << "  checksum elts  : " << r.eltChecksum  << "\n";
