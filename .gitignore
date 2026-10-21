@@ -45,3 +45,22 @@ TAGS
 plt*
 chk*
 
+
+# thermodiffusive-lens workflow: build products, scratch tables, test output
+Src/JUNK/
+Src/*.dat
+Src/Backtrace.*
+Src/tmp_build_dir/
+Src/*.ex
+amr_test_logs/
+amrComplex_mpi_test/
+amrComplex_shape_test/
+amrContour_mef_test/
+amrGradStats_test/
+lens_*/
+Docs/*.aux
+Docs/*.log
+Docs/*.out
+Docs/*.toc
+
+Docs/commitmsgs/
