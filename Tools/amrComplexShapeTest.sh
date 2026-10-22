@@ -296,6 +296,48 @@ for t in jump_L3 jump_rnd_L3; do
 done
 echo
 
+# --------------------------------------------------------------------------
+# 6. Closure with a wall, which is the configuration production runs are in.
+#
+# Sections 1-5 run everything fully periodic, where every face is shared by
+# two elements and the face invariant is zero on a watertight complex. A real
+# case has walls. A face lying on a wall belongs to one element and cannot
+# cancel, so the all-faces invariant is nonzero there by construction and says
+# nothing about watertightness. The invariant that still answers the question
+# is the one taken over interior faces only -- faces not every one of whose
+# corners sits on the domain face of its own level -- and that is what
+# faceClosed() reports.
+#
+# This section exists because the suite had no wall-bounded closure case at
+# all, so a merge that dropped the interior invariant passed everything here
+# and then aborted every production reduction with "complex is not watertight".
+#
+# Two things are asserted, and the second is the one with teeth: the complex
+# is reported closed with a wall present, AND the all-faces invariant is
+# nonzero in the same run. Without the second, a closure test that had been
+# quietly reduced to "always yes" would still pass.
+# --------------------------------------------------------------------------
+if [ "$DIM" = "2" ]; then WALLPER="1 0"; else WALLPER="1 1 0"; fi
+echo "=== 6. closure with a non-periodic wall ($WALLPER) ====================="
+for t in box_lo rnd_span rnd_L3; do
+    [ -d "shp_$t" ] || { fail "$t wall : hierarchy was never generated"; continue; }
+    $MPIRUN -n 1 "$VERIFY" infile=shp_$t is_per="$WALLPER" varnames=dist         > ver_wall_$t.log 2>&1
+    res=$(   awk '/RESULT/{print $2}'          ver_wall_$t.log)
+    closed=$(awk '/closed complex/{print $4}'  ver_wall_$t.log)
+    all=$(   awk '/checksum faces/{print $4}'  ver_wall_$t.log)
+    intr=$(  awk '/checksum intr/{print $4}'   ver_wall_$t.log)
+    if [ "$res" != "PASS" ]; then
+        fail "$t wall : volume gate $res"
+    elif [ "$closed" != "yes" ]; then
+        fail "$t wall : not face-closed (interior invariant $intr)"
+    elif [ "${all:-0}" = "0" ]; then
+        fail "$t wall : all-faces invariant is zero, so the wall faces were not counted and the closure test proves nothing"
+    else
+        pass "$t wall : closed, all-faces $all discounted to interior $intr"
+    fi
+done
+echo
+
 echo "======================================================================="
 if [ "$FAIL" -eq 0 ]; then
     echo "all shape tests pass"

@@ -200,8 +200,8 @@ public:
         // must not be compared across rank counts.
         // Taken only when verify(true) is asked for; the map it needs holds
         // every face instance on the rank, which at production size is most of
-        // the verify's memory. faceParity below is the invariant and is
-        // always computed.
+        // the verify's memory. The two face parities below are the
+        // invariants and are always computed.
         bool censusTaken   = false;
         long facesInterior = 0;   // incidence 2 -- correct
         long facesBoundary = 0;   // incidence 1 -- domain wall, expected
@@ -215,6 +215,17 @@ public:
         // exactly zero. With walls it is the XOR of the boundary faces alone:
         // nonzero, but still the same value at any rank count.
         unsigned long long faceParity = 0;
+
+        // The same XOR, taken over interior faces only: faces lying on a
+        // non-periodic domain wall are left out. A wall face belongs to one
+        // element and so cannot cancel, which makes faceParity nonzero by
+        // construction on any wall-bounded hierarchy. A face counts as a wall
+        // face when every one of its corners sits on the domain face of its
+        // OWN level, so a coarse-fine stitch at a refined wall is recognised
+        // without any geometry. This is the quantity that is zero exactly
+        // when the complex is watertight, whatever the periodicity, and it is
+        // what faceClosed() tests.
+        unsigned long long faceParityInterior = 0;
 
         // VALID nodes still carrying the fill sentinel: the value plumbing
         // has a hole the identity plumbing does not. Must be zero.
@@ -234,7 +245,7 @@ public:
         bool passed (amrex::Real tol = 1.0e-12) const noexcept
             { return std::abs(relError) < tol; }
         bool faceConforming () const noexcept { return facesBad == 0; }
-        bool faceClosed () const noexcept { return faceParity == 0; }
+        bool faceClosed () const noexcept { return faceParityInterior == 0; }
         bool fieldsFilled () const noexcept { return nodesUnfilled == 0; }
     };
 

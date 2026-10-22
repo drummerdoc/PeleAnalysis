@@ -703,7 +703,7 @@ AMRComplex::VerifyReport AMRComplex::verify (bool faceCensus) const
     Long nElt = 0, nNod = 0;
     Long degenFaces = 0, nUnfilled = 0;
     Long nodeSum = 0, eltSum = 0;
-    unsigned long long facePar = 0ULL;
+    unsigned long long facePar = 0ULL, faceParIn = 0ULL;
     std::map<FaceKey,int> faceCount;
     // Element identity is its corner node set, sorted so that a duplicate
     // generated in another box's frame hashes the same. Gated with the census
@@ -802,6 +802,26 @@ AMRComplex::VerifyReport AMRComplex::verify (bool faceCensus) const
             unsigned long long fh = 1469598103934665603ULL;
             for (int q = 0; q < nd; ++q) { mixIn(fh, (unsigned long long)(key[q])); }
             facePar ^= fh;
+
+            // A face on a non-periodic wall: every corner sits at the domain
+            // face of its own level. Coarse and fine corners of a stitch face
+            // both satisfy that at their own resolution, so this is exact at a
+            // refined wall and needs no geometry. Such a face belongs to one
+            // element only and can never cancel, so it is excluded from the
+            // interior parity -- the one that answers "is this watertight".
+            bool wallFace = false;
+            for (int d = 0; d < AMREX_SPACEDIM && !wallFace; ++d) {
+                if (m_params.is_per[d]) { continue; }
+                bool allLo = true, allHi = true;
+                for (int c = 0; c < NFCORNER; ++c) {
+                    const Node& nn = cn[FACE[f][c]];
+                    const Box&  dd = m_geom[nn.level].Domain();
+                    if (nn.iv[d] != dd.smallEnd(d)) { allLo = false; }
+                    if (nn.iv[d] != dd.bigEnd(d))   { allHi = false; }
+                }
+                if (allLo || allHi) { wallFace = true; }
+            }
+            if (!wallFace) { faceParIn ^= fh; }
         }
 
         // Corner offsets from corner 0, minimum image in periodic directions.
@@ -926,12 +946,16 @@ AMRComplex::VerifyReport AMRComplex::verify (bool faceCensus) const
     // which is irreducibly local.
 #ifdef AMREX_USE_MPI
     if (ParallelDescriptor::NProcs() > 1) {
-        unsigned long long tmp = facePar;
-        MPI_Allreduce(&tmp, &facePar, 1, MPI_UNSIGNED_LONG_LONG, MPI_BXOR,
+        unsigned long long tmp[2] = {facePar, faceParIn};
+        unsigned long long red[2] = {0ULL, 0ULL};
+        MPI_Allreduce(tmp, red, 2, MPI_UNSIGNED_LONG_LONG, MPI_BXOR,
                       ParallelDescriptor::Communicator());
+        facePar   = red[0];
+        faceParIn = red[1];
     }
 #endif
     r.faceParity = facePar;
+    r.faceParityInterior = faceParIn;
     r.nodesUnfilled   = nUnfilled;
     r.nodeChecksum    = nodeSum % CHECKSUM_MOD;
     r.eltChecksum     = eltSum  % CHECKSUM_MOD;
@@ -999,9 +1023,13 @@ void AMRComplex::reportVerify (const VerifyReport& r) const
     for (int d = 0; d < AMREX_SPACEDIM; ++d) {
         if (!m_params.is_per[d]) { allPeriodic = false; }
     }
-    if (allPeriodic) {
-        Print() << "  closed complex : " << (r.faceClosed() ? "yes" : "NO")
-                << "  (every face shared by exactly two elements)\n";
+    // faceParityInterior discounts the domain walls, so the closure test is
+    // meaningful whatever the periodicity. With every direction periodic
+    // there are no walls to discount and the two parities coincide.
+    Print() << "  closed complex : " << (r.faceClosed() ? "yes" : "NO")
+            << "  (every interior face shared by exactly two elements)\n";
+    if (!allPeriodic) {
+        Print() << "  checksum intr  : " << r.faceParityInterior << "\n";
     }
 
     if (r.censusTaken) {
