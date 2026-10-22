@@ -24,10 +24,29 @@
 #        2        121 M        ~17 GB            ~30 GB
 #        3        373 M        ~53 GB            ~95 GB
 #
-# Curvature needs the finest level available: max|kappa| scales as 1/dx at
-# every level tested, so the extremum is always mesh noise, and the thermal
-# front spans only 2.7 cells at level 1 against 10.7 at level 3. The lens and
-# Lewis results, which involve no second derivatives, are converged at level 1.
+# finestLevel does not change the resolution of the simulation. It chooses how
+# much of this plotfile's hierarchy the analysis reads. The levels above it are
+# discarded, and their data has already been averaged down into the levels
+# below, so a level-1 analysis is a coarsened view of the same solution. The
+# sequence therefore measures how much a diagnostic loses when it is computed
+# from a coarsened view. It says nothing about whether the simulation itself
+# resolves anything, and it is not a grid-convergence study.
+#
+# Measured on plt29791, level 1 against level 3:
+#
+#   the lens is insensitive. lens/optimal 0.929 against 0.935, enrichment
+#   42.9x against 44.6x, and the same two thresholds to four figures. The lens
+#   can be located on a coarsened view and the answer carries over.
+#
+#   the Lewis estimate is not. The flux ratio rises 21% in the coldest band,
+#   and its variation across the preheat zone collapses from 28% of the mean
+#   to 7%. Averaging down flattens |grad Y| more than |grad T|, because the
+#   fuel layer is the thinner of the two, so a coarsened view biases the ratio
+#   low and bends what should be a flat profile. Run it at full depth.
+#
+#   curvature admits more extremum with every level added. Whether what is
+#   being admitted is structure or point-to-point noise is a separate
+#   question, and a smoothing sweep answers it, not a level sweep.
 #
 set -u
 
@@ -110,8 +129,22 @@ PY=${PYTHON:-python3}
 
 mkdir -p "$OUTDIR" || exit 2
 LOG="$OUTDIR/pipeline.log"
-: > "$LOG"
+META="$OUTDIR/stage1.meta"
 G="$OUTDIR/${CASE}_g"
+
+# The log is appended to, never truncated. A --stage stats or --stage analyse
+# run used to erase the log it was about to read its bin ranges out of, and
+# then silently fall back to the compiled-in defaults. That is how an L3 run
+# ended up binning temperature to 2210 K while the L2 run that wrote the same
+# field used 2212, and the two sets of thresholds were then not comparable.
+# Anything a later stage needs from stage one is written to stage1.meta as
+# well, so a later stage never depends on scraping prose.
+{
+    echo
+    echo "======================================================================"
+    echo "run $(date '+%Y-%m-%d %H:%M:%S')  stage=$STAGE  finest=$FINEST  ranks=$NPROC"
+    echo "======================================================================"
+} >> "$LOG"
 
 say  () { echo "$@" | tee -a "$LOG"; }
 step () {
@@ -140,15 +173,53 @@ if [ "$STAGE" = all ] || [ "$STAGE" = grad ]; then
     say "  wrote $G"
     say "  component ranges and the normal floor are in $LOG"
     grep -A3 "normal floor" "$LOG" | sed 's/^/    /' | tee -a /dev/null
+
+    # The two numbers later stages need: the upper temperature edge and the
+    # peak |grad T| that sets the flame gate. Taken from the last occurrence,
+    # so a log carrying several runs yields this run's values.
+    m_tmax=$(awk '/^   temp /{v=$3} END{if (v != "") printf "%.0f", v+10}' "$LOG")
+    m_gmax=$(awk '/normal floor for temp/{v=$9} END{gsub(/[^0-9eE+.-]/,"",v); print v}' "$LOG")
+    m_floor=$(awk '/normal floor for temp/{v=$6} END{print v}' "$LOG")
+    {
+        echo "TMAX_META=${m_tmax}"
+        echo "GMAX_META=${m_gmax}"
+        echo "FLOOR_META=${m_floor}"
+    } > "$META"
 fi
 [ -d "$G" ] || { say "stage 1 output missing: $G"; exit 1; }
 
-# Upper temperature edge from the data unless given.
+TMAX_META=""; GMAX_META=""; FLOOR_META=""
+[ -f "$META" ] && . "$META"
+
+# Precedence for every derived bin edge: what was asked for on the command
+# line, then what stage one measured, then a compiled-in default that is only
+# ever right by luck and says so.
 if [ -z "$TMAX" ]; then
-    TMAX=$(awk '/^   temp /{printf "%.0f", $3+10}' "$LOG" | tail -1)
-    [ -n "$TMAX" ] || TMAX=2210
+    if [ -n "$TMAX_META" ]; then
+        TMAX=$TMAX_META
+    else
+        TMAX=2210
+        say "WARNING: no stage1.meta and no --tmax; using the default upper edge $TMAX K."
+        say "         Bin edges will not match a run that had the measured value."
+    fi
 fi
 say "temperature bins span $TU to $TMAX K"
+
+# The flame gate. This is a window on |grad T| that keeps the flame and drops
+# the quiescent gas on either side of it. Its edges have to follow the data:
+# the gate was once written as a fixed 1e7 to 1e9, and at a peak |grad T| of
+# 9.65e7 every cell in range fell into the first of its four bins, so the
+# coordinate was inert and the gated reduction was quietly an ungated one.
+# Scaling off the measured peak keeps the four bins populated at any case.
+if [ -n "$GMAX_META" ]; then
+    GLO=$(awk -v g="$GMAX_META" 'BEGIN{printf "%.6e", g/10.0}')
+    GHI=$(awk -v g="$GMAX_META" 'BEGIN{printf "%.6e", g*1.05}')
+    say "flame gate  : |grad T| in $GLO to $GHI  (peak $GMAX_META)"
+else
+    GLO=1e7; GHI=1e8
+    say "WARNING: no measured peak |grad T|; gating on the default $GLO to $GHI."
+    say "         Check that gradMag_temp has more than one occupied bin in r2_gated.txt."
+fi
 
 # ---------------------------------------------------------------- stage two
 if [ "$STAGE" = all ] || [ "$STAGE" = stats ]; then
@@ -166,7 +237,7 @@ if [ "$STAGE" = all ] || [ "$STAGE" = stats ]; then
          outfile="$OUTDIR/postulate.dat"
     step "joint TY x curvature, flame-gated" $FITRUN infile="$G" is_per="$ISPER" \
          coords="temp Y(H2) meanCurv_temp gradMag_temp" \
-         clo="$TU 0 -$KMAX 1e7" chi="$TMAX $YU $KMAX 1e9" cbins="20 20 16 4" \
+         clo="$TU 0 -$KMAX $GLO" chi="$TMAX $YU $KMAX $GHI" cbins="20 20 16 4" \
          resp="I_R(H2) HeatRelease" outfile="$OUTDIR/ty_curv_gated.dat"
 fi
 
@@ -199,6 +270,21 @@ fi
 
 say ""
 say "done. headline numbers:"
-[ -f "$OUTDIR/frontier.txt" ] && grep -E "^\s+0\.870%|fixed t2" "$OUTDIR/frontier.txt" | sed 's/^/  /' | tee -a "$LOG"
-[ -f "$OUTDIR/lewis.txt" ]    && grep -E "713-|Le_apparent" "$OUTDIR/lewis.txt" | sed 's/^/  /' | tee -a "$LOG"
+# Pick the rows by what they are, not by the value they happened to have on
+# the case this script was first written for. A grep for the literal 0.870%
+# matched nothing the moment a budget list changed.
+if [ -f "$OUTDIR/frontier.txt" ]; then
+    awk '/^ *[0-9]/{n++; if (n==3) print} /fixed t2/{print}' \
+        "$OUTDIR/frontier.txt" | sed 's/^/  /' | tee -a "$LOG"
+fi
+if [ -f "$OUTDIR/lewis.txt" ]; then
+    awk '/^ *[0-9]+-[0-9]+/{n++; if (n==1) print} /Le_apparent|sign of S/{print}' \
+        "$OUTDIR/lewis.txt" | sed 's/^/  /' | tee -a "$LOG"
+fi
+if [ -f "$OUTDIR/r2_gated.txt" ]; then
+    ng=$(awk '$1=="gradMag_temp"{print $2; exit}' "$OUTDIR/r2_gated.txt")
+    if [ -n "$ng" ] && [ "$ng" -le 1 ]; then
+        say "  WARNING: the flame gate has $ng occupied bin, so the gated reduction is ungated."
+    fi
+fi
 exit 0
