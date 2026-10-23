@@ -44,6 +44,29 @@ bool keepRandom (int ib, int jb, int kb, amrex::Real fill)
     return amrex::Real(h % 1000ULL) < amrex::Real(1000.0)*fill;
 }
 
+// A deterministic value in [-1,1] from a cell index, for the noisy field.
+//
+// What matters about it is that it is uncorrelated between NEIGHBOURING
+// cells. That is the component a low-pass filter is meant to remove and the
+// component a second derivative is ruined by, so any test of either needs a
+// field that actually carries it; a smooth analytic field does not, however
+// finely it is sampled. A hash of the index rather than a generator, so the
+// same field comes back on any machine, at any rank count, under any box
+// layout.
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+amrex::Real cellHash (int i, int j, int k, int lev)
+{
+    unsigned long long h = 1469598103934665603ULL;
+    const int c[4] = {i, j, k, lev};
+    for (int q = 0; q < 4; ++q) {
+        h ^= (unsigned long long)(c[q] + 1048576);
+        h *= 1099511628211ULL;
+        h ^= (h >> 29);
+    }
+    return amrex::Real(2.0)*(amrex::Real(h % 100000ULL)/amrex::Real(100000.0))
+         - amrex::Real(1.0);
+}
+
 amrex::BoxList carveRegion (const amrex::BoxList& allowed, int blk,
                             amrex::Real frac, amrex::Real fill,
                             const std::string& shape, const std::string& anchor)
@@ -185,6 +208,12 @@ int main (int argc, char* argv[])
         int refine_blk = max_grid_size;
         pp.query("refine_blk", refine_blk);
         Real refine_fill = 0.6;       pp.query("refine_fill", refine_fill);
+        // Amplitude of the cell-to-cell perturbation in the "noisy" field, in
+        // the units of dist, which is a length. A useful value is a fraction
+        // of a cell: noise_amp = 0.1*dx puts the surface a tenth of a cell
+        // off in each cell, which is invisible in the field and ruinous in
+        // its second derivative. Zero leaves "noisy" equal to "dist".
+        Real noise_amp = 0.0;         pp.query("noise_amp", noise_amp);
         AMREX_ALWAYS_ASSERT(refine_blk >= ref_ratio && refine_blk % ref_ratio == 0);
 
         // TODO collapse "region" into refine_shape/refine_anchor.
@@ -351,7 +380,15 @@ int main (int argc, char* argv[])
             // threshold is known exactly -- and the maxima sit ON the domain
             // faces, so finding k^DIM of them is also a test that the wrap is
             // in the adjacency.
-            data[lev].define(grids[lev], dmap[lev], 2+AMREX_SPACEDIM, 0);
+            // ... plus "noisy": dist with a cell-to-cell perturbation of a
+            // prescribed amplitude. Its level sets are the same spheres to
+            // within noise_amp, so any diagnostic that is a value or a first
+            // derivative barely notices it, while curvature -- a second
+            // derivative -- sees noise_amp/dx^2. That contrast is the whole
+            // reason the field is here: it is the positive control for the
+            // filter and for the realizability meter, both of which are
+            // untestable on a field that is smooth by construction.
+            data[lev].define(grids[lev], dmap[lev], 3+AMREX_SPACEDIM, 0);
 
             const auto dx  = geom[lev].CellSizeArray();
             const auto plo = geom[lev].ProbLoArray();
@@ -359,6 +396,7 @@ int main (int argc, char* argv[])
             for (int d = 0; d < AMREX_SPACEDIM; ++d) { phiA[d] = phi[d]; }
             const Real rad = radius;
             const Real kk  = Real(cell_k);
+            const Real namp = noise_amp;
 
             for (MFIter mfi(data[lev]); mfi.isValid(); ++mfi) {
                 const Box& bx = mfi.validbox();
@@ -383,6 +421,8 @@ int main (int argc, char* argv[])
                                  cc += std::cos(Real(2.0)*Real(M_PI)*kk*y/phiA[1]);,
                                  cc += std::cos(Real(2.0)*Real(M_PI)*kk*z/phiA[2]););
                     a(i,j,k,1+AMREX_SPACEDIM) = cc;
+                    a(i,j,k,2+AMREX_SPACEDIM) = a(i,j,k,0)
+                                              + namp*cellHash(i,j,k,lev);
                 });
             }
         }
@@ -391,7 +431,8 @@ int main (int argc, char* argv[])
         Vector<int> steps(nlevels, 0);
         for (int lev = 0; lev < nlevels; ++lev) { mfs[lev] = &data[lev]; }
 
-        Vector<std::string> vnames = {"dist", AMREX_D_DECL("xco","yco","zco"), "cells"};
+        Vector<std::string> vnames = {"dist", AMREX_D_DECL("xco","yco","zco"),
+                                      "cells", "noisy"};
         WriteMultiLevelPlotfile(outfile, nlevels, mfs, vnames, geom,
                                 Real(0.0), steps, rr);
 

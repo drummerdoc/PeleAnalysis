@@ -69,6 +69,49 @@ public:
                          const amrex::Array<int,AMREX_SPACEDIM>& sym_dir,
                          int maxOrder = 4,
                          int perLevel = 0);
+
+    // A counted number of explicit low-pass passes over phi, in place.
+    //
+    // This is not a diffusion solve run to a time. The time-based form asks
+    // the user for a smoothing time, whose effect depends on the mesh
+    // spacing: the same number filters a level-3 field differently from a
+    // level-1 one, and no value of it means "remove the point-to-point
+    // component and nothing else". A pass count does mean that, because a
+    // pass is the same operation however fine the mesh is.
+    //
+    // One pass is  phi <- phi + c h^2 lap(phi)  with c = 1/(4*DIM) and h the
+    // FINEST spacing in the hierarchy -- one amplitude everywhere, not one
+    // per level. c is the value that annihilates the cell-to-cell
+    // oscillation, the mode alternating sign in every direction at once,
+    // exactly. A wave resolved by n cells survives each pass with amplitude
+    // 1 - (pi/n)^2/DIM, so at ten cells per wavelength a pass costs 3% in 3D
+    // while the Nyquist component costs everything. That is the design
+    // intent: aim the filter at what the discretisation cannot represent,
+    // not at the structure it can.
+    //
+    // A per-level amplitude is the tempting choice and it is wrong; the
+    // reasoning, and the measurement that settles it, are in the .cpp.
+    //
+    // The Laplacian is the composite one, so the filter treats the
+    // coarse-fine interface the way the gradient does and does not deposit a
+    // ring of its own around every refined patch.
+    //
+    // What it cannot do: recover a surface from cell-scale wrinkling.
+    // Measured on a distance function perturbed by a fifth of a cell, the
+    // curvature starts out an order of magnitude too large and eight passes
+    // bring it back only to about twice the true value. Filtering makes
+    // conditional curvature statistics usable; it does not make an extremum
+    // trustworthy, and nothing does.
+    //
+    // phi needs one ghost cell; it is left filled on exit.
+    static void smooth (const amrex::Vector<amrex::MultiFab*>& phi,
+                        const amrex::Vector<amrex::Geometry>& geom,
+                        const amrex::Vector<amrex::BoxArray>& grids,
+                        const amrex::Vector<amrex::DistributionMapping>& dmap,
+                        const amrex::Array<int,AMREX_SPACEDIM>& is_per,
+                        const amrex::Array<int,AMREX_SPACEDIM>& sym_dir,
+                        int npass,
+                        int maxOrder = 4);
 };
 
 } // namespace amrcomplex

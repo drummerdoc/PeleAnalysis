@@ -32,6 +32,11 @@ Modes, each needing particular columns:
                                                 as a function of curvature
   r2         any coords, any responses          explained variance for every
                                                 coordinate subset
+  kinetics   coords (T, Y), species responses   the radical pool across the
+                                                band: which side of chain
+                                                branching each side of the
+                                                band is on, and where it
+                                                turns over
 
 Usage:
     lensAnalysis.py band      tab.dat --Tu 693 --Yu 1.325792e-2
@@ -39,6 +44,7 @@ Usage:
     lensAnalysis.py lewis     tab.dat --Tu 693 --Yu 1.325792e-2
     lensAnalysis.py postulate tab.dat
     lensAnalysis.py r2        tab.dat
+    lensAnalysis.py kinetics  tab.dat --Tu 693 --Yu 1.325792e-2 --crossover 1149
 
 Sign conventions, which matter and are easy to get backwards:
 
@@ -455,13 +461,165 @@ def mode_r2(t, args):
             print(f"  {name:>40} {len(uniq):>8} {1.0 - within/tot:>10.6f}")
 
 
+# ------------------------------------------------------------ kinetics mode
+
+# The radical pool, split by which chain a species belongs to. H, O and OH
+# carry chain branching; HO2 and H2O2 are what the competing termination
+# channel makes. Overridable, because a mechanism may name them differently
+# or carry only some of them.
+BRANCH_DEFAULT = ['Y(H)', 'Y(O)', 'Y(OH)']
+TERM_DEFAULT   = ['Y(HO2)', 'Y(H2O2)']
+
+
+def pool_sum(t, names, sel):
+    """Volume-weighted total of several species over a selection of bins."""
+    w = t.volume[sel]
+    if w.sum() <= 0:
+        return np.nan
+    return sum(np.average(t.mean(n)[sel], weights=w) for n in names)
+
+
+def mode_kinetics(t, args):
+    """Which chain the lens and the cusps are on, from the radical pool alone.
+
+    In hydrogen the structure of a flame is set by a competition between
+    chain branching, H + O2 -> OH + O, and termination, H + O2 + M -> HO2 + M.
+    Which wins is a function of temperature and pressure, and the temperature
+    where they balance -- crossover -- is near 1150 K for this mixture at
+    8 atm, rising as water accumulates and raises the third-body efficiency.
+
+    Rather than evaluate either rate, this reads the answer off the pool the
+    two channels leave behind:
+
+        Phi = (Y(HO2) + Y(H2O2)) / (Y(H) + Y(O) + Y(OH))
+
+    large below crossover and small above it. Nothing here needs a rate
+    constant, a mechanism file or a pressure, which is the point: the
+    conclusion does not inherit the uncertainty of rate parameters it would
+    otherwise be argued from.
+
+    Two caveats, because on its own this is suggestive rather than decisive.
+    Phi = 1 is a convention, not a rate equality -- HO2 is consumed as well
+    as produced, so the absolute level of Phi carries mechanism detail. And a
+    ratio of mass fractions is not a ratio of fluxes.
+
+    What is subject to neither caveat is the comparison BETWEEN THE TWO SIDES
+    of the T-Y band at the same temperature. Both sides are the same mixture
+    at the same T and the same pressure, so a difference in Phi across the
+    band is differential diffusion sorting the radical pool, measured with no
+    reference to kinetics at all. That is the same logic as the apparent
+    Lewis number split in the 'lewis' mode, and the two are read together.
+    """
+    Tname = args.T or guess_names(t)[0]
+    Yname = args.Y or guess_names(t)[1]
+    t.require([Tname, Yname], 'kinetics')
+
+    have = set(t.resp)
+    branch = [n for n in (args.branch or BRANCH_DEFAULT) if n in have]
+    term   = [n for n in (args.term   or TERM_DEFAULT)   if n in have]
+    if not branch or not term:
+        raise SystemExit(
+            "kinetics: need at least one branching and one termination "
+            f"species among the responses.\n  looked for "
+            f"{args.branch or BRANCH_DEFAULT} and {args.term or TERM_DEFAULT}\n"
+            f"  table has {sorted(have)}\n"
+            "  pass --branch/--term to name them differently")
+
+    T = t.coord(Tname)
+    Y = t.coord(Yname)
+    V = t.volume.sum()
+
+    # Side of the band, by the sign of the excess-enthalpy scalar: the same
+    # construction the lewis mode splits on, so the two tables line up band
+    # for band and can be read side by side.
+    YL = band_centreline(t, Tname, Yname)[5]
+    gi = np.searchsorted(np.unique(T), T)
+    dev = Y - YL[gi]
+
+    print("# radical pool across the T-Y band")
+    print(f"#   branching  : {' + '.join(branch)}")
+    print(f"#   termination: {' + '.join(term)}")
+    print("#   Phi = termination / branching; Phi > 1 is the terminating side"
+          " of crossover")
+    if args.crossover:
+        print(f"#   reference crossover, for comparison only: "
+              f"{args.crossover:g} K")
+    print(f"#\n# {'T band':>15} {'vol':>9} {'Phi all':>10} "
+          f"{'Phi S>0':>10} {'Phi S<=0':>10} {'ratio':>8}")
+
+    edges = args.bands
+    prof = []
+    for lo, hi in zip(edges[:-1], edges[1:]):
+        base = (T >= lo) & (T < hi)
+        if t.volume[base].sum() <= 0:
+            continue
+        pa = pool_sum(t, term, base) / pool_sum(t, branch, base)
+        rich = base & (dev > 0)
+        lean = base & (dev <= 0)
+        pr = pl = np.nan
+        if t.volume[rich].sum() > 0:
+            pr = pool_sum(t, term, rich) / pool_sum(t, branch, rich)
+        if t.volume[lean].sum() > 0:
+            pl = pool_sum(t, term, lean) / pool_sum(t, branch, lean)
+        ratio = (pr/pl if (np.isfinite(pr) and np.isfinite(pl) and pl > 0)
+                 else np.nan)
+        print(f"  {lo:>6.0f}-{hi:<8.0f} {100*t.volume[base].sum()/V:>8.4f}% "
+              f"{pa:>10.4f} {pr:>10.4f} {pl:>10.4f} {ratio:>8.3f}")
+        prof.append((0.5*(lo+hi), pa, pr, pl))
+
+    # Where Phi crosses one, by interpolation between the two bands that
+    # straddle it. Phi falls over orders of magnitude, so the interpolation
+    # is in log Phi; a linear one places the crossing systematically low.
+    def crossing(idx, label):
+        pts = [(p[0], p[idx]) for p in prof
+               if np.isfinite(p[idx]) and p[idx] > 0]
+        for (x0, y0), (x1, y1) in zip(pts, pts[1:]):
+            if (y0 - 1.0)*(y1 - 1.0) <= 0 and y0 != y1:
+                f = (0.0 - np.log(y0))/(np.log(y1) - np.log(y0))
+                print(f"#   {label:<28} Phi = 1 at {x0 + f*(x1 - x0):>7.1f} K")
+                return
+        print(f"#   {label:<28} no crossing within the bands given")
+
+    print("#")
+    crossing(1, "whole band")
+    crossing(2, "rich side (the lens)")
+    crossing(3, "lean side (the cusps)")
+
+    # Net H production: an independent reading of the same competition that
+    # does not pass through concentrations at all. Where branching wins the
+    # radical pool is growing, so the conditional mean of I_R(H) is positive.
+    hsrc = args.hrate if args.hrate else 'I_R(H)'
+    if hsrc in have:
+        print(f"#\n# net {hsrc} by temperature band, and where it turns")
+        print(f"# {'T band':>15} {'all':>14} {'S>0':>14} {'S<=0':>14}")
+        last = None
+        for lo, hi in zip(edges[:-1], edges[1:]):
+            base = (T >= lo) & (T < hi)
+            if t.volume[base].sum() <= 0:
+                continue
+            vals = []
+            for s in (base, base & (dev > 0), base & (dev <= 0)):
+                vals.append(np.average(t.mean(hsrc)[s], weights=t.volume[s])
+                            if t.volume[s].sum() > 0 else np.nan)
+            print(f"  {lo:>6.0f}-{hi:<8.0f} {vals[0]:>14.5e} "
+                  f"{vals[1]:>14.5e} {vals[2]:>14.5e}")
+            if last is not None and np.isfinite(vals[0]) and last[1]*vals[0] < 0:
+                print(f"#   net {hsrc} changes sign between {last[0]:.0f} and "
+                      f"{0.5*(lo + hi):.0f} K")
+            last = (0.5*(lo + hi), vals[0])
+    else:
+        print(f"#\n# no {hsrc} among the responses; carry it for the "
+              "independent reading")
+
+
 # --------------------------------------------------------------------- main
 
 def main(argv=None):
     p = argparse.ArgumentParser(
         description="Thermodiffusive-lens analysis of amrJointFit tables.",
         epilog="See Docs/ThermodiffusiveLens.tex for what each mode measures.")
-    p.add_argument('mode', choices=['band', 'frontier', 'lewis', 'postulate', 'r2'])
+    p.add_argument('mode', choices=['band', 'frontier', 'lewis', 'postulate',
+                                    'r2', 'kinetics'])
     p.add_argument('table')
     p.add_argument('--Tu', type=float, default=693.0,
                    help="unburnt temperature (K); the Lewis estimates are very "
@@ -493,12 +651,25 @@ def main(argv=None):
     p.add_argument('--t2-lo', type=float, default=1150.0)
     p.add_argument('--t2-hi', type=float, default=1750.0)
     p.add_argument('--vol-min', type=float, default=2e-5)
+    p.add_argument('--branch', type=lambda s: s.split(','), default=None,
+                   help="comma-separated branching-pool species for 'kinetics' "
+                        f"(default {','.join(BRANCH_DEFAULT)})")
+    p.add_argument('--term', type=lambda s: s.split(','), default=None,
+                   help="comma-separated termination-pool species for 'kinetics' "
+                        f"(default {','.join(TERM_DEFAULT)})")
+    p.add_argument('--hrate', default=None,
+                   help="net H production rate response for 'kinetics' "
+                        "(default I_R(H))")
+    p.add_argument('--crossover', type=float, default=None,
+                   help="a reference crossover temperature to print alongside "
+                        "the measured one; printed, never used in a calculation")
     args = p.parse_args(argv)
 
     t = Table(args.table)
     print(f"# {t.describe()}")
     {'band': mode_band, 'frontier': mode_frontier, 'lewis': mode_lewis,
-     'postulate': mode_postulate, 'r2': mode_r2}[args.mode](t, args)
+     'postulate': mode_postulate, 'r2': mode_r2,
+     'kinetics': mode_kinetics}[args.mode](t, args)
     return 0
 
 
