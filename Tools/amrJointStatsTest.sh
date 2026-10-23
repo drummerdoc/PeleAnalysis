@@ -65,16 +65,10 @@ MPIRUN=${MPIRUN:-mpiexec}
 DIM=${DIM:-3}
 DTAG="${DIM}d"
 
-shopt -s nullglob
-JS=("$SRC"/amrJointFit${DTAG}.*MPI.ex)
-MAKEPLT=("$SRC"/makeTestPlt${DTAG}.*MPI.ex)
-shopt -u nullglob
-if [ ${#JS[@]} -eq 0 ] || [ ${#MAKEPLT[@]} -eq 0 ]; then
-    echo "ERROR: no MPI executables found in $SRC."
-    echo "Build them with USE_MPI=TRUE (see the header of this script)."
-    exit 1
-fi
-JS=${JS[0]}; MAKEPLT=${MAKEPLT[0]}
+. "$HERE/amrPickExe.sh"
+
+require_exe JS      amrJointFit mpi
+require_exe MAKEPLT makeTestPlt mpi
 
 WORK=${WORK:-$(pwd)/amrJointStats_test}
 mkdir -p "$WORK" && cd "$WORK" || exit 1

@@ -40,17 +40,11 @@ MPIRUN=${MPIRUN:-mpiexec}
 
 if [ "$DIM" = "2" ]; then PER="1 1"; VARS="xco yco"; else PER="1 1 1"; VARS="xco yco zco"; fi
 
-shopt -s nullglob
-CONTOUR=("$SRC"/amrContourVerify${DTAG}.*MPI.ex)
-MAKEPLT=("$SRC"/makeTestPlt${DTAG}.*MPI.ex)
-TODAT=("$SRC"/surfMEFtoDAT${DTAG}.*MPI.ex)
-shopt -u nullglob
+. "$HERE/amrPickExe.sh"
 
-if [ ${#CONTOUR[@]} -eq 0 ] || [ ${#MAKEPLT[@]} -eq 0 ]; then
-    echo "ERROR: no MPI executables for DIM=$DIM in $SRC (see header)."
-    exit 1
-fi
-CONTOUR=${CONTOUR[0]}; MAKEPLT=${MAKEPLT[0]}; TODAT=${TODAT[0]:-}
+require_exe CONTOUR amrContourVerify mpi
+require_exe MAKEPLT makeTestPlt      mpi
+TODAT=$(pick_exe surfMEFtoDAT "" mpi) || TODAT=""
 
 WORK=${WORK:-$(pwd)/amrContour_mef_test}
 mkdir -p "$WORK" && cd "$WORK" || exit 1

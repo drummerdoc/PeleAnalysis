@@ -6,7 +6,7 @@
 #   Tools/amrBuildAndTest.sh
 #
 # Environment:
-#   COMP=llvm            compiler (default llvm, to match this tree's builds)
+#   COMP=llvm            compiler (default: llvm on macOS, gnu elsewhere)
 #   MPIRUN=...           launcher; OpenMPI on a laptop needs
 #                        MPIRUN="mpirun --oversubscribe"
 #   RANKS="1 2 3 4"      rank counts for the MPI suites
@@ -18,7 +18,17 @@ set -u
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 SRC="$HERE/../Src"
-COMP=${COMP:-llvm}
+# The default follows the platform. It used to be llvm unconditionally, which
+# is right on the Mac this tree was developed on and wrong on a Linux machine,
+# where it built llvm executables beside a stale gnu set and the suites that
+# picked alphabetically then tested the stale ones. COMP is exported so every
+# suite tests exactly what was built here, whatever else is in Src.
+case $(uname -s) in
+    Darwin) DEFCOMP=llvm ;;
+    *)      DEFCOMP=gnu  ;;
+esac
+COMP=${COMP:-$DEFCOMP}
+export COMP
 JOBS=${JOBS:-8}
 DIMS=${DIMS:-"2 3"}
 RANKS=${RANKS:-"1 2 3 4"}

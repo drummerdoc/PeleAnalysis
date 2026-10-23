@@ -73,18 +73,10 @@ MPIRUN=${MPIRUN:-mpiexec}
 DIM=${DIM:-3}
 DTAG="${DIM}d"
 
-shopt -s nullglob
-VERIFY=("$SRC"/amrComplexVerify${DTAG}.*MPI.ex)
-MAKEPLT=("$SRC"/makeTestPlt${DTAG}.*MPI.ex)
-shopt -u nullglob
+. "$HERE/amrPickExe.sh"
 
-if [ ${#VERIFY[@]} -eq 0 ] || [ ${#MAKEPLT[@]} -eq 0 ]; then
-    echo "ERROR: no MPI executables found in $SRC."
-    echo "Build them with USE_MPI=TRUE (see the header of this script)."
-    exit 1
-fi
-VERIFY=${VERIFY[0]}
-MAKEPLT=${MAKEPLT[0]}
+require_exe VERIFY  amrComplexVerify mpi
+require_exe MAKEPLT makeTestPlt      mpi
 
 WORK=${WORK:-$(pwd)/amrComplex_shape_test}
 mkdir -p "$WORK" && cd "$WORK" || exit 1

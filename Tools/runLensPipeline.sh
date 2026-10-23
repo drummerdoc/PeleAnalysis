@@ -108,7 +108,8 @@ done
 [ -n "$CASE" ] || CASE=$(basename "$INFILE")
 [ -n "$OUTDIR" ] || OUTDIR="$(pwd)/lens_${CASE}_L${FINEST}"
 
-pick () { ls -t "$SRC/${1}${DTAG}".*ex 2>/dev/null | head -1; }
+. "$HERE/amrPickExe.sh"
+pick () { pick_exe "$1" "$DTAG"; }
 launcher () {
     # The first word of MPIRUN only: command -v on the whole of
     # "mpirun --oversubscribe" finds nothing, and the fallback is not a

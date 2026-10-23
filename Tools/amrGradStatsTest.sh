@@ -55,14 +55,14 @@ DTAG="${DIM}d"
 # builds that are actually maintained, so "prefer serial" reliably picked the
 # stalest executable present. Newest-wins keeps all three tools from the same
 # build, which is what makes their results comparable in the first place.
-pick () {
-    ls -t "$SRC/${1}${DTAG}".*ex 2>/dev/null | head -1
-}
+. "$HERE/amrPickExe.sh"
+pick () { pick_exe "$1" "$DTAG"; }
 # One-rank launcher for an MPI build; empty for a serial one.
 launcher () {
     case $1 in
-        *MPI*) if command -v "${MPIRUN:-mpiexec}" >/dev/null 2>&1; then
-                   printf '%s -n 1' "${MPIRUN:-mpiexec}"
+        *MPI*) mr=${MPIRUN:-mpiexec}
+               if command -v "${mr%% *}" >/dev/null 2>&1; then
+                   printf '%s -n 1' "$mr"
                fi ;;
     esac
 }

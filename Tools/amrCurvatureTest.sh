@@ -66,7 +66,8 @@ MPIRUN=${MPIRUN:-mpiexec}
 PY=${PYTHON:-python3}
 NC=${NC:-64}
 
-pick () { ls -t "$SRC/${1}3d".*ex 2>/dev/null | head -1; }
+. "$HERE/amrPickExe.sh"
+pick () { pick_exe "$1" 3d; }
 launcher () {
     # Test the FIRST WORD of MPIRUN, not the whole string. The documented way
     # to run these suites is MPIRUN="mpirun --oversubscribe", and command -v
