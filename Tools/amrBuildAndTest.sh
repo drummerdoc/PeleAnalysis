@@ -30,7 +30,7 @@ SKIP_BUILD=${SKIP_BUILD:-0}
 # ones whose first build spends minutes compiling AMReX. Putting them last means
 # a mistake in the cheap targets is reported in seconds rather than after that.
 TARGETS="amrComplexVerify amrContourVerify amrSweep amrLabel amrJointFit makeTestPlt surfMEFtoDAT"
-TARGETS="$TARGETS amrGradStats amrGradVerify"
+TARGETS="$TARGETS amrGradStats amrGradVerify amrCurvVerify"
 LIBSRC="AMRComplex.cpp AMRContour.cpp AMRSegment.cpp AMRParallel.cpp AMRJointStats.cpp"
 LIBSRC="$LIBSRC AMRGradient.cpp"
 LOGDIR=${LOGDIR:-$(pwd)/amr_test_logs}
@@ -148,6 +148,12 @@ for d in $DIMS; do
   run_suite mef                 amrContourMefTest.sh    "$d"
   run_suite joint_stats         amrJointStatsTest.sh    "$d"
   run_suite grad_stats          amrGradStatsTest.sh     "$d"
+  # 3D only: there is no Gaussian curvature of a plane curve, so sections 1
+  # to 4 of that suite have nothing to check in 2D. Leaving it out of the 2D
+  # pass is deliberate; running it there would report a vacuous pass.
+  if [ "$d" = "3" ]; then
+    run_suite curvature         amrCurvatureTest.sh     "$d"
+  fi
 done
 
 echo "=================================================================="

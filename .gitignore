@@ -78,3 +78,6 @@ Docs/figs/*.png
 # Test workdirs left by the curvature suite and by hand runs.
 amrCurvature_test/
 Claude outputs/
+
+# Hand-moved bundle of reduction tables for transferring between machines.
+reference_tables/
