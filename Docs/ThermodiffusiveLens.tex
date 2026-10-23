@@ -11,6 +11,7 @@
 \usepackage{booktabs}
 \usepackage{longtable}
 \usepackage{graphicx}
+\usepackage{tikz}
 \usepackage{listings}
 \usepackage[hidelinks]{hyperref}
 \usepackage{xcolor}
@@ -507,6 +508,349 @@ component of $\{S > s\}$: one threshold rather than two, monotone by
 construction, and --- once $Y_L^0(T)$ comes from a 1-D flame rather than from
 the field itself --- meaning the same thing in every snapshot, which is the
 property needed to relate elements through time.
+
+% ===========================================================================
+\section{The tools}
+\label{sec:tools}
+
+Three libraries and seven programs, in four layers, each layer resting on the
+one before. Line counts are given because the ratio is the point: the tests are
+bigger than the things they test.
+
+\subsection{Layer 1 --- a cell structure you can trust on an adaptive mesh}
+
+The hard part of working with adaptive mesh data is not the physics, it is the
+bookkeeping. A plotfile is a stack of nested grids at different resolutions.
+Anything you measure --- a volume, a surface area, a gradient --- has to behave
+sensibly where a fine grid meets a coarse one, and has to behave sensibly where
+the domain wraps around on itself. Get that wrong and the error does not show
+up as noise everywhere; it shows up as a thin skin of wrongness along every
+interface, which is much harder to notice and does not go away when you refine.
+
+\paragraph{\texttt{AMRComplex}} builds, once, a structure that gets this right,
+so that everything downstream can stop worrying about it. Think of the cell
+centres of the input as the corners of a 3D mesh, and the blocks between them
+as the mesh's cells. Where a fine grid abuts a coarse one, the block spanning
+the gap is squashed --- several fine corners collapse onto one coarse corner
+--- but it is still a block, and it still has a volume. Those squashed blocks
+are what seal the interface.
+
+The one decision that makes this work is how a corner is named. A corner is
+identified by \emph{which cell it is} --- its level and its integer index ---
+and never by where it sits in space. Two blocks share a corner because they
+refer to the same cell, not because two floating-point coordinates happened to
+agree to within some tolerance. The consequences are worth spelling out,
+because all three are load-bearing:
+
+\begin{itemize}
+\item The structure is sealed at coarse-fine interfaces \emph{by construction}.
+      There is no welding step and no tolerance to tune.
+\item Periodic wrapping comes for free. AMReX's ghost-cell exchange copies the
+      corner's stored name, and cannot alter an integer index while copying it,
+      so the ghost cell beyond the high face ends up literally holding the
+      low-face corner. The wrap identifies itself.
+\item When this rule has been broken, the code has broken with it --- twice,
+      both times in deciding which grid box owns a block that straddles a
+      periodic seam. Both times the symptom was a volume that did not add up.
+\end{itemize}
+
+That last point is why there is a self-check. \texttt{verify()} adds up the
+volumes of every block and compares the total against the volume of the domain,
+which is a number known exactly in advance. If the blocks tile the domain, the
+two agree to the last bit; if anything is missing, duplicated, or folded over,
+they do not. It also checks that every internal face is shared by exactly two
+blocks, which is the statement that the structure has no holes. Two of the
+checks need a lookup table over every face or every block on each processor ---
+two billion entries on a production case --- so those are off unless asked for,
+and the cheap version of the same test always runs.
+
+\subsection{Layer 2 --- surfaces and connected regions}
+
+\paragraph{\texttt{AMRContour}} draws an isosurface: the surface where some
+field equals a chosen value. Two decisions:
+
+\begin{enumerate}
+\item Each block is first chopped into tetrahedra, and the surface is traced
+      through the tetrahedra rather than through the blocks directly. A
+      tetrahedron cut by a surface has only three possible outcomes, all
+      unambiguous. A cube has famously ambiguous cases --- situations where the
+      data alone does not say whether two corners of a face are connected
+      through the face or around it --- and resolving them inconsistently
+      between neighbouring cubes tears holes in the surface. Chopping into
+      tetrahedra removes the question rather than answering it.
+\item A point on the surface is named by \emph{which edge it lies on}, and that
+      edge by the pair of corners at its ends. Two blocks sharing an edge
+      therefore arrive at the same surface point automatically, at any
+      refinement level and across a periodic wrap. No merging of nearby points,
+      no tolerance, and none of the cracks and misplaced vertices that follow
+      from getting such a merge slightly wrong.
+\end{enumerate}
+
+It reports the surface area, how many triangles and vertices there are, whether
+the surface is closed (every edge used by exactly two triangles --- a count that
+comes out at exactly zero for a closed surface, at any processor count),
+whether the triangles are consistently oriented, and the volume the surface
+encloses. In 2D the same statements hold with line segments instead of
+triangles, which is why the closure test is literally the same code.
+
+\paragraph{\texttt{AMRSegment}} finds connected regions: given a threshold, which
+blobs does it pick out, and which cells belong to which blob. Two properties
+matter more than speed.
+
+\emph{Periodic domains need no special handling.} The regions are grown through
+the complex's own neighbour relationships, and those already know about the
+wrap and about coarse-fine interfaces. No domain face ever enters the
+calculation, so where you happen to have placed the boundaries cannot change
+the answer.
+
+\emph{Region labels do not depend on how the work was divided.} A region is
+named after the smallest cell index it contains --- a property of the region
+itself, not of which processor happened to find it. Run the same case on 1
+processor or 64 and the labels are identical. That is what makes two
+segmentations comparable at all: across processor counts, across candidate
+definitions, and across time, which is the one that matters for following a
+structure as it evolves.
+
+\paragraph{The programs.}
+\begin{itemize}
+\item \texttt{amrSweep} walks a threshold through a field's range and reports,
+      at each value, how many separate regions it picks out, how their sizes
+      are distributed, and how much surface there is. Run it on several
+      candidate fields and the tables are directly comparable --- which is the
+      point, because what a ``cell'' is, is exactly the thing not yet known.
+      What one looks for is a plateau in the region count, or a gap in the size
+      distribution. Either would be a scale that does not depend on the
+      threshold, and so a defensible definition. A featureless continuum is
+      also an answer, and a more interesting one.
+\item \texttt{amrLabel} writes a segmentation as a plotfile: one integer per
+      cell saying which region it belongs to, on exactly the input's own grids,
+      so it can be loaded alongside the original fields and overlaid directly
+      in a viewer. It can also write the isosurface with each triangle tagged by
+      the region it bounds. Region numbers are compact and ordered by size
+      (1 is the largest) rather than being the raw cell index, which runs to
+      hundreds of millions and would not survive being stored as a
+      single-precision number.
+\item \texttt{amrComplexVerify} and \texttt{amrContourVerify} build and check.
+\item \texttt{surfMEFtoDAT} converts an extracted surface between file formats.
+\end{itemize}
+
+\subsection{Layer 3 --- gradients}
+
+\paragraph{\texttt{AMRGradient}} (87 lines) takes derivatives. The whole content
+of it is Section~\ref{sec:gradients}: ask the linear-solver machinery for the
+gradient over the entire grid hierarchy at once, rather than one level at a
+time, so that coarse-fine interfaces are handled the way the flow solver itself
+handles them. Figure~\ref{fig:cf} is the reason this matters and the reason the
+test suite measures what it measures.
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[scale=0.62]
+  \definecolor{band}{HTML}{EB6834}
+  \definecolor{ink}{HTML}{52514E}
+  \foreach \i in {0,...,9} \foreach \j in {0,...,5}
+    \draw[gray!35,line width=0.3pt] (\i,\j) rectangle ++(1,1);
+  \foreach \i in {8,...,15} \foreach \j in {4,...,9}
+    \draw[gray!55,line width=0.25pt] (\i*0.5,\j*0.5) rectangle ++(0.5,0.5);
+  \draw[ink,line width=1.1pt] (4,2) rectangle (8,5);
+  \fill[band,opacity=0.16] (2,0) rectangle (4,6);
+  \fill[band,opacity=0.16] (8,0) rectangle (10,6);
+  \fill[band,opacity=0.16] (4,0) rectangle (8,2);
+  \fill[band,opacity=0.16] (4,5) rectangle (8,6);
+  \fill[band,opacity=0.16] (4,2) rectangle (8,3);
+  \fill[band,opacity=0.16] (4,4) rectangle (8,5);
+  \fill[band,opacity=0.16] (4,3) rectangle (5,4);
+  \fill[band,opacity=0.16] (7,3) rectangle (8,4);
+  \node[ink,anchor=west,font=\small] at (10.5,5.2) {coarse level};
+  \node[ink,anchor=west,font=\small] at (10.5,4.2) {refined patch};
+  \node[band,anchor=west,font=\small] at (10.5,3.2)
+       {the band the test measures:};
+  \node[band,anchor=west,font=\small] at (10.5,2.5)
+       {within two cells of the interface};
+  \node[ink,anchor=west,font=\small,text width=5.4cm] at (10.5,0.9)
+       {A global error norm cannot see a defect here: it is a surface, so it is
+        a vanishing share of the volume.};
+\end{tikzpicture}
+\caption{Why \texttt{amrGradVerify} reports three regions separately. A wrong
+gradient at a coarse-fine interface lives on a two-dimensional surface inside a
+three-dimensional volume, so it barely moves an error norm taken over
+everything. Refining makes the skin thinner, not better.}
+\label{fig:cf}
+\end{figure}
+
+\paragraph{\texttt{amrGradStats}} (357 lines) writes a new plotfile on the same
+grids containing: the requested fields unchanged, their gradients and gradient
+magnitudes, the angle between pairs of gradients, and optionally the direction
+normal to a surface and that surface's mean curvature. Because the output is an
+ordinary plotfile on the input's own grids, every downstream tool reads it with
+no special handling.
+
+\paragraph{\texttt{amrGradVerify}} (248 lines) measures the error against a case
+whose answer is known exactly, and reports it on three regions separately: all
+cells, interior cells, and the band shaded in Figure~\ref{fig:cf}. The split is
+the entire tool.
+
+\subsection{Layer 4 --- statistics in value space}
+
+\paragraph{\texttt{AMRJointStats}} (254 lines) answers questions of the form
+``if I know the temperature and the fuel fraction at a point, how much does
+that tell me about the heat release there?'' It does this by sorting every cell
+into a bin according to its field \emph{values} rather than its position, and
+accumulating, per bin, the volume and the mean and spread of whatever responses
+were asked for. From that it reports, for every combination of the chosen
+variables, the fraction of the response's variation those variables account
+for. Volumes are accumulated as integer cell counts times exact cell volumes,
+so the total closes exactly rather than approximately, and the sums are
+compensated so that the answer does not depend on how many processors ran it.
+
+\paragraph{\texttt{amrJointFit}} (245 lines) is the program that drives it and
+writes the table.
+
+\subsection{Testing}
+
+\begin{center}
+\begin{tabular}{llr}
+\toprule
+suite & what it covers & lines \\
+\midrule
+\texttt{amrComplexMpiTest.sh}   & same answer at any processor count & --- \\
+\texttt{amrComplexShapeTest.sh} & 13 grid layouts $\times$ 2 dimensions & 305 \\
+\texttt{amrContourMefTest.sh}   & surface closure, parallel gathering & --- \\
+\texttt{amrJointStatsTest.sh}   & volume closure, convergence, consistency & 385 \\
+\texttt{amrGradStatsTest.sh}    & 19 checks per dimension & 369 \\
+\texttt{amrBuildAndTest.sh}     & builds everything, runs all of the above & --- \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+One rule runs through all of them: \textbf{every check is paired with a
+deliberately broken version that it must catch.} Switches exist to reinstate
+each defect that was ever found here --- the old ownership rule, the
+too-narrow interface stitch, the one-level-at-a-time gradient, an inconsistent
+subdivision --- and the suite fails if any of them passes. A check that cannot
+be made to fail is not a check, and two of these caught a real regression while
+merging two branches of this work.
+
+\subsection{Analysis}
+
+\paragraph{\texttt{lensAnalysis.py}} (506 lines) reads the tables
+\texttt{amrJointFit} writes and nothing else, which is what lets any number in
+this document be traced back to a file on disk. Five modes, one per question
+asked in Sections~\ref{sec:lens}--\ref{sec:lewis}. \textbf{\texttt{runLensPipeline.sh}}
+(204 lines) runs the whole chain in one command.
+
+% ===========================================================================
+\section{How the tools produce the result}
+\label{sec:chain}
+
+Three stages, each feeding the next.
+
+\paragraph{Stage 1.} \texttt{amrGradStats} turns the raw plotfile into one
+carrying $\nabla T$, $\nabla \YH$, their magnitudes, the angle between them,
+and the curvature of the temperature field, with the heat release and the fuel
+consumption rate carried through untouched.
+
+\paragraph{Stage 2.} \texttt{amrJointFit} reduces that to four tables, each
+asking a different question through its choice of binning variables:
+
+\begin{center}
+\begin{tabular}{llp{0.34\textwidth}}
+\toprule
+binned on & responses & question \\
+\midrule
+$(T, \YH)$ & heat release, $\dot\omega$ & where the consumption lives in the
+  $T$--$\YH$ plane \\
+\addlinespace[2pt]
+$(T, \YH)$ & $|\nabla T|$, $|\nabla \YH|$ & the Lewis number, from the ratio of
+  the two fluxes \\
+\addlinespace[2pt]
+$(T, \kappa)$ & $\YH$, $\dot\omega$ & how fuel and burning vary with curvature
+  at fixed temperature \\
+\addlinespace[2pt]
+$(T, \YH, \kappa, |\nabla T|)$ & $\dot\omega$ & whether curvature adds anything
+  the value pair does not already say \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{Stage 3.} \texttt{lensAnalysis.py}, one mode per table.
+Figures~\ref{fig:plane}--\ref{fig:curv} are its output.
+
+\begin{figure}[p]
+\centering
+\includegraphics[width=0.92\textwidth]{figs/fig_plane.pdf}
+\caption{Where the burning is, in value space. Every cell in the domain is
+placed by its temperature and its fuel mass fraction, and shaded by how fast
+fuel is being consumed there. The data occupies a curved band, because
+temperature and fuel are strongly anti-correlated through a flame: the dashed
+line is the band's centre. The lens is the orange quadrant --- gas that is
+simultaneously \emph{hotter} and \emph{richer} than the band allows. It holds
+0.87\% of the volume and 37\% of the consumption. The opposite corner, hot and
+lean, is burnt-out product: no fuel left and nothing happening. This is why the
+first orientation we tried, hot-and-lean, gave an enrichment \emph{below}
+random.}
+\label{fig:plane}
+\end{figure}
+
+\begin{figure}[p]
+\centering
+\includegraphics[width=0.86\textwidth]{figs/fig_capture.pdf}
+\caption{How good the lens is, against the best that any region of the same
+size could do. The upper curve is the theoretical optimum --- take the cells
+with the highest consumption first, regardless of what shape that makes. At the
+0.87\% operating point the lens captures 93\% of that, so a pair of contours is
+very nearly the right shape and not merely a convenient one. Thresholding the
+single quantity $Y - Y_L(T)$ does about as well with one parameter instead of
+two. Temperature alone captures almost nothing, and neither does any straight
+line drawn in the plane of Figure~\ref{fig:plane}: the structure is a departure
+from the curved band, which no single blended progress variable can express.}
+\label{fig:capture}
+\end{figure}
+
+\begin{figure}[p]
+\centering
+\includegraphics[width=0.86\textwidth]{figs/fig_lewis.pdf}
+\caption{The Lewis number --- how fast hydrogen diffuses relative to heat ---
+measured two ways from the same data. The solid curve is the ratio of the two
+fluxes, measured locally. In the preheat zone, where the derivation behind it
+is valid, it gives 0.313, matching the accepted value for lean hydrogen--air.
+The dashed line is what the shape of the band in Figure~\ref{fig:plane} implies;
+the two are identical in a one-dimensional flame, and they disagree here by
+45\% because the band's centre is an average over flame elements at different
+enrichment, and so is bent by the very effect being measured. The rise above
+800~K is not transport: it is heat release invalidating the derivation.}
+\label{fig:lewis}
+\end{figure}
+
+\begin{figure}[p]
+\centering
+\includegraphics[width=0.86\textwidth]{figs/fig_curv.pdf}
+\caption{The mechanism, in one picture. At \emph{fixed} temperature, there is
+over twice as much fuel where the flame bulges toward the fresh gas as where it
+is cupped the other way, and this holds at every temperature across the flame.
+Since the temperature is the same along each curve, this cannot be explained by
+the crests simply being hotter. It is hydrogen out-diffusing the heat that
+would otherwise balance it --- and the consumption rate follows the same
+ordering, by a factor of 2.6 in the preheat zone rising to 8 in the reaction
+zone. Sign convention: the normal points toward the products, so negative
+curvature is the crest; the combustion literature uses the opposite sign.}
+\label{fig:curv}
+\end{figure}
+
+\paragraph{What the first two layers contribute, and what they do not.} The
+lens result above uses neither \texttt{AMRContour} nor \texttt{AMRSegment}. It
+is entirely an argument in value space, which is precisely what makes it
+independent of any particular definition of a cell --- there are no blobs in it
+and no threshold on anything spatial. Those tools answer the complementary
+question: \texttt{amrSweep} asks whether a threshold-independent scale exists at
+all, and \texttt{amrLabel} turns a chosen threshold into labelled regions that
+load alongside the original data. The two halves meet at the end of
+Section~\ref{sec:synthesis}. Once a cell is defined as a connected region of
+$\{S > s\}$, with $S$ the excess-enthalpy scalar the value-space work
+identified, it is \texttt{AMRSegment} that finds those regions and
+\texttt{amrLabel} that writes them out --- and \texttt{AMRSegment}'s
+processor-independent labelling is what would let the same region be
+recognised in the next snapshot.
 
 % ===========================================================================
 \section{Procedure}

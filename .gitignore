@@ -71,3 +71,10 @@ Docs/commitmsgs/
 # Scratch left by the build-and-test harness and by interrupted runs.
 Tools/_stale_logs_from_guard_check/
 Tools/work_*/
+
+Docs/figs/*.png
+!Docs/figs/*.pdf
+
+# Test workdirs left by the curvature suite and by hand runs.
+amrCurvature_test/
+Claude outputs/
