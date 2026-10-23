@@ -110,7 +110,10 @@ done
 
 pick () { ls -t "$SRC/${1}${DTAG}".*ex 2>/dev/null | head -1; }
 launcher () {
-    case $1 in *MPI*) command -v "$MPIRUN" >/dev/null 2>&1 \
+    # The first word of MPIRUN only: command -v on the whole of
+    # "mpirun --oversubscribe" finds nothing, and the fallback is not a
+    # serial run but a hang, because a bare MPI binary waits for a launcher.
+    case $1 in *MPI*) command -v "${MPIRUN%% *}" >/dev/null 2>&1 \
         && printf '%s -n %s' "$MPIRUN" "$NPROC" ;;
     esac
 }

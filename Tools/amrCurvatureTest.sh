@@ -68,7 +68,14 @@ NC=${NC:-64}
 
 pick () { ls -t "$SRC/${1}3d".*ex 2>/dev/null | head -1; }
 launcher () {
-    case $1 in *MPI*) command -v "$MPIRUN" >/dev/null 2>&1 \
+    # Test the FIRST WORD of MPIRUN, not the whole string. The documented way
+    # to run these suites is MPIRUN="mpirun --oversubscribe", and command -v
+    # on that whole string finds nothing, so this returned empty and the MPI
+    # executable was launched bare -- which does not fail, it HANGS, because a
+    # bare MPI binary waits for a launcher that is never coming. The older
+    # suites have no such test and simply always use $MPIRUN, which is why
+    # they were unaffected.
+    case $1 in *MPI*) command -v "${MPIRUN%% *}" >/dev/null 2>&1 \
         && printf '%s -n 1' "$MPIRUN" ;;
     esac
 }

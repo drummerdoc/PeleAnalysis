@@ -328,6 +328,14 @@ for t in box_lo rnd_span rnd_L3; do
     intr=$(  awk '/checksum intr/{print $4}'   ver_wall_$t.log)
     if [ "$res" != "PASS" ]; then
         fail "$t wall : volume gate $res"
+    elif [ -z "$closed" ]; then
+        # No closure line at all. The binary predates the wall-aware face
+        # parity, which only ever printed the closure line when every
+        # direction was periodic -- so at a wall it says nothing. Reporting
+        # that as "not closed" blames the mesh for a stale executable, which
+        # is what this check did the first time it ran on a tree whose
+        # sources had been updated and whose objects had not.
+        fail "$t wall : $(basename "$VERIFY") reports no closure line at a wall, so it predates faceParityInterior -- rebuild it"
     elif [ "$closed" != "yes" ]; then
         fail "$t wall : not face-closed (interior invariant $intr)"
     elif [ "${all:-0}" = "0" ]; then
