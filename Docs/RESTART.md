@@ -100,11 +100,27 @@ on all four levels of real PeleLMeX flame sheets.
     MPIRUN="mpirun --oversubscribe" Tools/amrBuildAndTest.sh
 
 Drop `--oversubscribe` off OpenMPI. `DIM=2`, `RANKS=`, `COMP=`, `SKIP_BUILD=1`
-all honoured. On the Mac add `COMP=llvm`. Six suites: complex and contour,
-shapes, MEF, joint statistics, gradient statistics, and curvature. The
-curvature suite runs in 3D only, deliberately: a plane curve has one principal
-curvature and no Gaussian one, so four of its five sections would report a
-vacuous pass in 2D.
+all honoured. `COMP` defaults by platform -- llvm on macOS, gnu elsewhere --
+and does not need setting. Six suites: complex and contour, shapes, MEF, joint
+statistics, gradient statistics, and curvature. The curvature suite runs in 3D
+only, deliberately: a plane curve has one principal curvature and no Gaussian
+one, so four of its five sections would report a vacuous pass in 2D.
+
+**Which executable gets tested** is decided in one place, `Tools/amrPickExe.sh`,
+and it is worth knowing about because getting it wrong is silent. The harness
+exports `COMP`, and a suite prefers the matching build, falling back to the
+newest by mtime. Before that existed, four suites took the first match of a
+glob -- alphabetical -- so with a gnu and an llvm build both present in `Src`
+the gnu one always won however old it was, and a two-day-old binary reported
+three wall-closure failures on a watertight complex. If a suite fails in a way
+that makes no sense, check which executable it names in its first line of
+output and when that file was built.
+
+The same file warns when an executable is older than a source it is built
+from. It is a warning and not a refusal on purpose: it reimplements the
+makefile's dependency list by hand, so it can be wrong, and it was -- three
+times, each time stopping suites over a source the binary does not link.
+Believe it when the suite also fails; ignore it when the suite passes.
 
 ## Running the lens analysis
 
