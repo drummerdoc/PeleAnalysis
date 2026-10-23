@@ -46,15 +46,48 @@ pick_exe () {
     fi
     [ -n "$chosen" ] || chosen=$(ls -t "$SRC/${base}${dtag}."$suffix 2>/dev/null | head -1)
     if [ -z "$chosen" ] || [ ! -x "$chosen" ]; then
+        # Say which it is. "No usable build" covers two quite different
+        # situations -- nothing was ever built, or what was built is out of
+        # date -- and they are fixed the same way but diagnosed differently,
+        # so the message should not make the reader guess.
+        echo "ERROR: no ${dtag} executable matching ${base}${dtag}.${COMP:+${COMP}.}${suffix} in $SRC" >&2
+        if ls "$SRC/${base}${dtag}."*ex >/dev/null 2>&1; then
+            echo "  present but not matching:" >&2
+            ls -t "$SRC/${base}${dtag}."*ex 2>/dev/null | sed 's|.*/|    |' >&2
+        else
+            echo "  nothing of that name at all; the build did not run or did not finish" >&2
+        fi
         return 1
     fi
 
-    # The staleness comparison. Only sources that are linked into these
-    # drivers live in Src, so the newest of them is the right reference.
+    # The staleness comparison, against the sources this driver is actually
+    # built from and no others.
+    #
+    # Src holds the whole of PeleAnalysis -- some forty unrelated drivers and
+    # library files. Comparing against the newest of all of them means that
+    # editing smoothMEF.cpp, or merely adding a new driver, makes every suite
+    # refuse to run. The first version of this check did exactly that and
+    # stopped three suites dead on a tree where nothing they depend on had
+    # changed.
+    #
+    # The list below is the one GNUmakefile.AMRComplex declares, plus the
+    # driver itself. If the makefile's CEXE_sources changes, change this too;
+    # a guard that is quietly out of step with the build is worse than none.
+    local deps="AMRComplex AMRContour AMRSegment AMRParallel AMRJointStats"
+    local files="" d
+    for d in $deps; do
+        [ -f "$SRC/$d.cpp" ] && files="$files $SRC/$d.cpp"
+        [ -f "$SRC/$d.H" ]   && files="$files $SRC/$d.H"
+    done
+    [ -f "$SRC/AMRGradient.cpp" ] && files="$files $SRC/AMRGradient.cpp $SRC/AMRGradient.H"
+    [ -f "$SRC/${base}.cpp" ]     && files="$files $SRC/${base}.cpp"
+
     local newest
-    newest=$(ls -t "$SRC"/*.cpp "$SRC"/*.H 2>/dev/null | head -1)
+    newest=$(ls -t $files 2>/dev/null | head -1)
     if [ -n "$newest" ] && [ "$newest" -nt "$chosen" ]; then
-        echo "ERROR: $(basename "$chosen") is older than $(basename "$newest")." >&2
+        echo "ERROR: $(basename "$chosen") is older than $(basename "$newest"), which it is built from." >&2
+        echo "         executable: $(date -r "$chosen" '+%Y-%m-%d %H:%M' 2>/dev/null)  $(basename "$chosen")" >&2
+        echo "         source    : $(date -r "$newest" '+%Y-%m-%d %H:%M' 2>/dev/null)  $(basename "$newest")" >&2
         echo "  Rebuild before testing. A stale binary answers confidently and" >&2
         echo "  the failure then looks like a defect in the mesh or the data." >&2
         echo "  make -f GNUmakefile.AMRComplex USE_MPI=TRUE COMP=${COMP:-<comp>} DIM=${dtag%d} EBASE=${base} -j8" >&2

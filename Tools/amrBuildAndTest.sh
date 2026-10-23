@@ -146,6 +146,12 @@ run_suite () {   # name  script  dim  extra-args...
   else
       RC=1
       echo "FAILURES -- full log at $log"
+      # Show both shapes of failure. A suite that ran and failed reports
+      # lines beginning "  FAIL"; a suite that never started -- no usable
+      # executable, a missing input -- writes an ERROR and nothing else, and
+      # greping only for FAIL printed a single trailing line with the
+      # diagnosis scrolled off above it.
+      grep -E "^ERROR|^  ERROR" "$log" | head -12
       grep -A4 "  FAIL" "$log" | head -40
       tail -1 "$log"
   fi
