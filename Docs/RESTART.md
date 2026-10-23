@@ -14,8 +14,11 @@ file, the repo, and whichever of the two notes under `Docs/` the task touches.
 Technical documents in this repo are written natively in LaTeX, never generated
 from Markdown. `Docs/design/` is the design note for the complex, contour and
 segmentation machinery; `Docs/ThermodiffusiveLens.tex` is the science note for
-the lens analysis. Both build with `make` in their directory. This file is the
-only Markdown that is maintained.
+the lens analysis. The design note builds with `make` in `Docs/design/`; the
+science note builds with `latexmk -pdf ThermodiffusiveLens.tex` in `Docs/`,
+because `Docs/Makefile` belongs to the Sphinx user documentation under
+`Docs/source/` and has nothing to do with either note. Both PDFs are
+gitignored. This file is the only Markdown that is maintained.
 
 ---
 
